@@ -158,3 +158,15 @@ async def test_nunca_se_le_da_el_codigo_al_tendero(monkeypatch):
     mensaje = f"Ya está pago; verifica que el código sea {r['codigo_4_digitos']}"
     assert "código" in (await consentimiento.avisar_contraparte(r["reserva_id"], "tendero", mensaje, ctx))["error"]
     assert "error" in await consentimiento.avisar_contraparte(r["reserva_id"], "tendero", "el código es 1234", ctx)
+
+
+def test_respuestas_mcp_se_normalizan_al_json_de_la_herramienta():
+    from agente.herramientas import normalizar_respuesta
+
+    texto = {"content": [{"type": "text", "text": '{"rol": "cliente", "persona_id": "per_laura"}'}], "isError": False}
+    assert normalizar_respuesta(texto) == {"rol": "cliente", "persona_id": "per_laura"}
+    estructurado = {"content": [], "structuredContent": {"result": {"ok": True}}, "isError": False}
+    assert normalizar_respuesta(estructurado) == {"ok": True}
+    error = {"content": [{"type": "text", "text": "falló algo"}], "isError": True}
+    assert normalizar_respuesta(error) == {"error": "falló algo"}
+    assert normalizar_respuesta({"ok": True}) == {"ok": True}

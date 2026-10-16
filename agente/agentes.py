@@ -19,7 +19,7 @@ from google.adk.tools.agent_tool import AgentTool
 
 from agente import consentimiento
 from agente.config import get_settings
-from agente.herramientas import herramientas_de
+from agente.herramientas import herramientas_de, normalizar_respuesta
 
 log = logging.getLogger("agente")
 
@@ -44,11 +44,14 @@ def limitar_intentos(tool: BaseTool, args: dict[str, Any], tool_context: ToolCon
 
 def recordar_ids(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext,
                  tool_response: dict) -> Optional[dict]:
+    # En modo "mcp" llega un CallToolResult; se reemplaza por el JSON plano de la herramienta.
+    original, tool_response = tool_response, normalizar_respuesta(tool_response)
+    reemplazo = tool_response if tool_response is not original else None
     reserva_id = args.get("reserva_id") or (tool_response.get("reserva_id") if isinstance(tool_response, dict) else None)
     log.info("agente=%s herramienta=%s reserva_id=%s args=%s resultado=%.300s", tool_context.agent_name,
              tool.name, reserva_id, args, tool_response)
     if not isinstance(tool_response, dict) or "error" in tool_response:
-        return None
+        return reemplazo
     for clave in _CLAVES_ESTADO:
         valor = tool_response.get(clave)
         if valor is not None and valor != "":
@@ -67,7 +70,7 @@ def recordar_ids(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
         wallet = (tool_context.state.get("wallets_tiendas") or {}).get(args.get("tienda_id"))
         if wallet:
             tool_context.state["wallet_tienda"] = wallet
-    return None
+    return reemplazo
 
 
 # Lo que ya se sabe; ADK lo rellena desde el estado de la sesión.

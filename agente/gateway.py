@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 from collections import defaultdict
@@ -143,11 +141,12 @@ def _pagina(titulo: str, cuerpo: str) -> str:
 
 
 @app.get("/op/finish", response_class=HTMLResponse)
-async def op_finish(tareas: BackgroundTasks, grant_id: str, interact_ref: str = "", result: str = "") -> str:
-    # TODO(mcp-pagos): verificar el `hash` del callback interactivo antes de continuar el grant.
+async def op_finish(tareas: BackgroundTasks, grant_id: str, interact_ref: str = "", hash: str = "",
+                    result: str = "") -> str:
     if result == "grant_rejected" or not interact_ref:
         return _pagina("Cupo rechazado", "<p>No se aprobó ningún cupo. Puedes volver a WhatsApp.</p>")
-    r = await llamar_interna("continuar_permiso", grant_id=grant_id, interact_ref=interact_ref)
+    # El backend verifica el hash del callback antes de continuar el grant.
+    r = await llamar_interna("continuar_permiso", grant_id=grant_id, interact_ref=interact_ref, hash=hash)
     if "error" in r:
         log.warning("grant_id=%s continuar_permiso falló: %s", grant_id, r["error"])
         return _pagina("No pudimos confirmar", f"<p>{r['error']}</p>")
@@ -158,34 +157,22 @@ async def op_finish(tareas: BackgroundTasks, grant_id: str, interact_ref: str = 
 
 # ---------------------------------------------------------------- Didit
 
-def _firma_didit_valida(cuerpo: bytes, firma: str) -> bool:
-    # TODO: confirmar en docs.didit.me el formato exacto de X-Signature-V2.
-    secreto = get_settings().didit_webhook_secret
-    esperada = hmac.new(secreto.encode(), cuerpo, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(esperada, firma)
-
-
-async def _resultado_facial(session_id: str, aprobado: bool) -> dict:
-    r = await llamar_interna("marcar_face_match", session_id=session_id, aprobado=aprobado)
+async def procesar_resultado_didit(cuerpo: str, firma: str) -> dict:
+    """Reenvía el webhook de Didit al backend (que valida la firma) y le avisa a la persona."""
+    r = await llamar_interna("procesar_webhook_didit", cuerpo=cuerpo, firma=firma)
     if "error" in r:
-        log.warning("session_id=%s marcar_face_match falló: %s", session_id, r["error"])
+        log.warning("webhook Didit rechazado: %s", r["error"])
         return r
-    aviso = "La verificación de identidad fue APROBADA." if aprobado else         "La verificación de identidad fue RECHAZADA: la cara no coincide."
-    await avisar(r["whatsapp"], f"{aviso} (motivo: {r['motivo']})")
+    if r.get("procesado"):
+        aviso = "La verificación de identidad fue APROBADA." if r["aprobado"] else             "La verificación de identidad fue RECHAZADA: la cara no coincide."
+        await avisar(r["whatsapp"], f"{aviso} (motivo: {r['motivo']})")
     return r
 
 
 @app.post("/webhook/didit")
 async def webhook_didit(request: Request, tareas: BackgroundTasks) -> dict:
-    cuerpo = await request.body()
-    if get_settings().didit_webhook_secret and not _firma_didit_valida(
-            cuerpo, request.headers.get("X-Signature-V2", "")):
-        raise HTTPException(401, "Firma inválida")
-    datos = json.loads(cuerpo)
-    estado = datos.get("status")
-    if estado not in ("Approved", "Declined"):
-        return {"ok": True, "ignorado": estado}
-    tareas.add_task(_resultado_facial, datos.get("session_id", ""), estado == "Approved")
+    cuerpo = (await request.body()).decode("utf-8")
+    tareas.add_task(procesar_resultado_didit, cuerpo, request.headers.get("X-Signature-V2", ""))
     return {"ok": True}
 
 
@@ -224,5 +211,6 @@ async def simulador_didit(session_id: str) -> str:
 @app.get("/simulador/didit/resultado", response_class=HTMLResponse)
 async def simulador_didit_resultado(session_id: str, aprobado: bool, tareas: BackgroundTasks) -> str:
     _solo_simulado()
-    tareas.add_task(_resultado_facial, session_id, aprobado)
+    cuerpo = json.dumps({"session_id": session_id, "status": "Approved" if aprobado else "Declined"})
+    tareas.add_task(procesar_resultado_didit, cuerpo, "")
     return _pagina("Verificación enviada", "<p>Vuelve a WhatsApp.</p>")

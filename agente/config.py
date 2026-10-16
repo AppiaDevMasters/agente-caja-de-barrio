@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     mcp_identidad_url: str = "http://mcp-identidad:8104/mcp"
 
     public_base_url: str = "http://localhost:8080"
-    didit_webhook_secret: str = ""
 
 
 @lru_cache

@@ -34,13 +34,34 @@ PERMISOS: dict[str, dict[str, list[str]]] = {
 INTERNAS = {
     "continuar_permiso": "pagos",
     "registrar_aprobacion": "pagos",
-    "marcar_face_match": "identidad",
+    "procesar_webhook_didit": "identidad",
     "aceptar_politicas": "identidad",
     "confirmar_recibido": "caja",
 }
 # Lecturas que el código también necesita (por ejemplo, para avisarle a la contraparte).
 LECTURAS_DESDE_CODIGO = {"consultar_reserva": "caja"}
 _LLAMABLES_DESDE_CODIGO = {**INTERNAS, **LECTURAS_DESDE_CODIGO}
+
+
+def normalizar_respuesta(respuesta: Any) -> Any:
+    """Convierte un CallToolResult de MCP (ya volcado a dict) en el JSON plano de la herramienta.
+
+    Así el agente ve lo mismo en modo "mcp" que en modo "simulado".
+    """
+    if not isinstance(respuesta, dict) or "content" not in respuesta or "isError" not in respuesta:
+        return respuesta
+    estructurado = respuesta.get("structuredContent")
+    if isinstance(estructurado, dict):
+        datos = estructurado.get("result", estructurado) if len(estructurado) == 1 else estructurado
+    else:
+        texto = "".join(c.get("text", "") for c in respuesta.get("content", []) if isinstance(c, dict))
+        try:
+            datos = json.loads(texto)
+        except json.JSONDecodeError:
+            datos = {"resultado": texto}
+    if respuesta.get("isError") and not (isinstance(datos, dict) and "error" in datos):
+        return {"error": datos.get("resultado") if isinstance(datos, dict) else str(datos)}
+    return datos
 
 
 def _url_servidor(servidor: str) -> str:
@@ -77,10 +98,4 @@ async def llamar_interna(nombre: str, **argumentos: Any) -> dict:
         async with ClientSession(leer, escribir) as sesion:
             await sesion.initialize()
             resultado = await sesion.call_tool(nombre, argumentos)
-    if resultado.structuredContent:
-        return dict(resultado.structuredContent)
-    texto = "".join(getattr(c, "text", "") for c in resultado.content)
-    try:
-        return json.loads(texto)
-    except json.JSONDecodeError:
-        return {"error" if resultado.isError else "resultado": texto}
+    return normalizar_respuesta(resultado.model_dump(exclude_none=True, mode="json"))
