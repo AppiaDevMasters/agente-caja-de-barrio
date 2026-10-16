@@ -1,5 +1,9 @@
 # Cambios de las reglas de oro que tocan la base y el panel
 
+> **Actualización:** el backend de Go ahora es dueño de la base y de Open Payments, Didit y Verifik. El contrato
+> vigente, con endpoints y tablas, está en `contexto-caja-de-barrio/contrato-backend.md`. Este documento queda
+> como resumen de las reglas.
+
 El agente ya funciona con estas reglas en modo simulado (`agente/herramientas/simuladas.py` es la
 referencia de comportamiento). Para que los MCP reales y el panel las soporten, la base necesita esto.
 

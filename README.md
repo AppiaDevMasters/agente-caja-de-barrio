@@ -48,6 +48,22 @@ billetera (cupo) y de Didit abren páginas de prueba que disparan los mismos web
 
 Detalle de lo que cambia en la base y el panel: [docs/cambios-para-backend-y-panel.md](docs/cambios-para-backend-y-panel.md).
 
+## Cadena completa: agente → MCP → backend
+
+El backend en Go es dueño de la base e integra Open Payments, Didit y Verifik. Los cuatro MCP son capas delgadas
+sobre sus endpoints: [contrato-backend.md](https://github.com/AppiaDevMasters/contexto-caja-de-barrio/blob/main/contrato-backend.md).
+
+Mientras el backend de Go no esté, `dev/backend_simulado.py` cumple ese contrato con la misma lógica de
+`simuladas.py`. Con los repos de los MCP clonados al lado de este:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+Esto levanta el backend simulado (8190), los 4 MCP y el agente en modo `mcp` (8088). Didit y la billetera se
+simulan igual que los reales: Didit le manda el webhook al agente y la billetera redirige a `/op/finish`; el
+agente los reenvía al backend por los MCP. Cuando el backend de Go esté listo, se cambia `BACKEND_URL` de los MCP.
+
 ## Endpoints
 
 | Endpoint | Para qué |
@@ -56,7 +72,7 @@ Detalle de lo que cambia en la base y el panel: [docs/cambios-para-backend-y-pan
 | `POST /chat`, `GET /chat/pendientes`, `GET /` | Chat web (plan B) |
 | `GET /op/finish` | Vuelta del grant interactivo (cupo) de Open Payments → `continuar_permiso` |
 | `GET /politicas` | Políticas que la persona debe aceptar |
-| `POST /webhook/didit` | Resultado de Didit (firma `X-Signature-V2`) → `marcar_face_match` |
+| `POST /webhook/didit` | Webhook de Didit: se reenvía sin tocar al backend (`procesar_webhook_didit`), que valida la firma |
 | `GET /health` | Salud del contenedor |
 
 ## Pruebas
