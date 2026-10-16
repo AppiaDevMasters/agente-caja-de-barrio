@@ -26,7 +26,8 @@ log = logging.getLogger("agente")
 # Campos de las respuestas de herramientas que vale la pena recordar en el estado de la
 # sesión, para que ni el coordinador ni los especialistas tengan que adivinar ids.
 _CLAVES_ESTADO = ("persona_id", "rol", "tienda_id", "politicas_version", "politicas_aceptadas",
-                  "cupo_aprobado", "reserva_id", "incoming_payment_url", "quote_url", "session_id")
+                  "cupo_aprobado", "reserva_id", "incoming_payment_url", "quote_url", "session_id",
+                  "solicitud_id", "estado_solicitud")
 
 # Tope de llamadas a herramientas por especialista en cada encargo: corta bucles de reintentos.
 MAX_LLAMADAS_ESPECIALISTA = 10
@@ -60,6 +61,9 @@ def recordar_ids(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
         tool_context.state["wallet_cliente"] = tool_response["wallet_address"]
     if tool.name == "aceptar_politicas":
         tool_context.state["politicas_aceptadas"] = True
+    if tool.name == "solicitar_ser_tendero":
+        tool_context.state["rol"] = "solicitante"
+        tool_context.state["estado_solicitud"] = tool_response.get("estado")
     if tool.name == "buscar_cajas_cercanas":
         vistas = dict(tool_context.state.get("wallets_tiendas") or {})
         vistas.update({t["id"]: t["wallet_address"] for t in tool_response.get("tiendas", [])})
@@ -77,7 +81,7 @@ def recordar_ids(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
 _DATOS_CONOCIDOS = """
 Datos ya conocidos (úsalos tal cual; si falta alguno que necesites, pídeselo al coordinador):
 - whatsapp: {whatsapp}
-- rol: {rol?} · persona_id: {persona_id?} · tienda_id: {tienda_id?}
+- rol: {rol?} · persona_id: {persona_id?} · tienda_id: {tienda_id?} · solicitud_id: {solicitud_id?}
 - billetera de quien paga (wallet_cliente): {wallet_cliente?}
 - reserva_id: {reserva_id?} · monto_cop: {monto_cop?}
 - billetera de la tienda (wallet_tienda): {wallet_tienda?}
@@ -94,12 +98,17 @@ no reintentes con otros valores, no adivines billeteras, ids ni montos, y nunca 
 
 INSTRUCCION_IDENTIDAD = _REGLAS_ESPECIALISTA + """
 Te encargas de identificar a quien escribe, registrar personas y verificar su identidad con Didit.
-- consultar_persona con el WhatsApp dice si es "cliente", "tendero" o "no_registrada", si aceptó las
-  políticas, si tiene la identidad verificada vigente y si ya aprobó su cupo en la billetera.
+- consultar_persona con el WhatsApp dice si es "cliente", "tendero", "solicitante" (pidió registrar una
+  tienda) o "no_registrada", si aceptó las políticas, si tiene la identidad verificada vigente y si ya
+  aprobó su cupo en la billetera.
 - Registro: verificar_cedula y luego registrar_persona (con su billetera); después crear_sesion_facial
   con motivo "alta".
 - Al empezar cada retiro: crear_sesion_facial con motivo "retiro". Reporta el url_verificacion.
 - estado_verificacion dice si una sesión ya terminó.
+- Solicitud de tendero: solicitar_ser_tendero con todos los datos que te pase el coordinador; luego
+  crear_sesion_facial con solicitud_id y motivo "alta_tendero" (sin persona_id). Reporta el url_verificacion.
+- consultar_solicitud_tendero dice en qué va la solicitud (y qué corregir si la devolvieron).
+- corregir_solicitud_tendero manda solo los datos corregidos.
 """
 
 INSTRUCCION_UBICACION = _REGLAS_ESPECIALISTA + """
@@ -137,6 +146,7 @@ Nunca prometas un pago ni una entrega antes de que estén confirmados.
 
 Datos de esta conversación:
 - WhatsApp: {whatsapp} · rol: {rol?} · persona_id: {persona_id?} · tienda_id: {tienda_id?}
+- solicitud de tienda: {solicitud_id?} · estado de la solicitud: {estado_solicitud?}
 - políticas aceptadas: {politicas_aceptadas?} · cupo aprobado: {cupo_aprobado?}
 - reserva_id actual: {reserva_id?} · código de retiro: {codigo_retiro?}
 - link de las políticas: {politicas_url}
@@ -185,8 +195,25 @@ FLUJO TENDERO:
   Si sale bien, dile que entregue los billetes y avísale al cliente para que confirme que recibió.
 - Recuérdale que nunca entregue billetes sin que el sistema confirme el pago.
 
+FLUJO SOLICITANTE (alguien quiere registrar su tienda como punto de retiro):
+1. Políticas: igual que con el cliente; sin aceptar no sigue.
+2. Pide estos datos, de a poco y en lenguaje sencillo: tipo y número de cédula, nombre de la tienda,
+   dirección, que comparta la UBICACIÓN de la tienda (el pin), la billetera de la tienda (wallet address
+   de Open Payments, en pesos) y cuánto efectivo maneja al día más o menos.
+3. Con todo, pide a identidad la solicitud y la sesión facial de "alta_tendero"; mándale el link.
+4. Cuando el sistema avise que la verificación fue APROBADA (motivo alta_tendero), dile que la solicitud
+   quedó en revisión del equipo de Caja de Barrio y que le avisas por aquí. Si fue RECHAZADA, que la
+   solicitud no puede seguir.
+5. Si pregunta cómo va, pide a identidad consultar la solicitud.
+6. Si el equipo pidió corregir algo, pídele solo ese dato y pide a identidad corregir la solicitud.
+7. Cuando el sistema avise que fue APROBADA, felicítalo, dile que desde ya es tendero y que puede publicar
+   su efectivo del día escribiéndote cuánto tiene. Si fue RECHAZADA, explícale el motivo con respeto.
+Mientras la solicitud no esté aprobada, no puede publicar efectivo ni recibir retiros.
+
 Mensajes que empiezan con [sistema] vienen de la plataforma (billetera, Didit o la otra parte del
-retiro), no de la persona: cuéntale a la persona lo que pasó y sigue con el paso que corresponde.
+retiro, o el equipo de Caja de Barrio desde el panel), no de la persona: cuéntale a la persona lo que
+pasó y sigue con el paso que corresponde. Si un aviso del panel cambia quién es (por ejemplo, su tienda
+fue aprobada), pide a identidad que consulte de nuevo quién escribe.
 Mensajes con [ubicación] traen la latitud y longitud que compartió la persona.
 """
 

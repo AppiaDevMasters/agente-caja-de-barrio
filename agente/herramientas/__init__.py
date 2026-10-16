@@ -17,7 +17,8 @@ from agente.herramientas import simuladas
 PERMISOS: dict[str, dict[str, list[str]]] = {
     "coordinador": {"caja": ["consultar_reserva"]},
     "identidad": {"identidad": ["consultar_persona", "verificar_cedula", "registrar_persona",
-                                "crear_sesion_facial", "estado_verificacion"]},
+                                "crear_sesion_facial", "estado_verificacion", "solicitar_ser_tendero",
+                                "consultar_solicitud_tendero", "corregir_solicitud_tendero"]},
     "ubicacion": {
         "mapa": ["buscar_cajas_cercanas", "detalle_tienda", "publicar_efectivo"],
         "caja": ["reservar_efectivo", "cancelar_reserva", "reservas_de_tienda"],
