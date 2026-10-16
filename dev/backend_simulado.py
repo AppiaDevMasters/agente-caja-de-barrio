@@ -29,6 +29,7 @@ log = logging.getLogger("backend-simulado")
 SERVICIO_TOKEN = os.getenv("SERVICIO_TOKEN", "")
 OP_FINISH_URL = os.getenv("OP_FINISH_URL", "http://localhost:8088/op/finish")
 DIDIT_CALLBACK_URL = os.getenv("DIDIT_CALLBACK_URL", "http://agente:8080/webhook/didit")
+AGENTE_URL = os.getenv("AGENTE_URL", "http://agente:8080")
 
 app = FastAPI(title="Backend simulado de Caja de Barrio")
 
@@ -124,6 +125,87 @@ async def estado_verificacion(session_id: str) -> dict:
 async def webhook_didit(datos: dict) -> dict:
     # El Didit real firma con X-Signature-V2; el simulado no firma.
     return _ok(s.procesar_webhook_didit, cuerpo=datos["cuerpo"], firma=datos.get("firma", ""))
+
+
+@app.post("/internal/identidad/solicitudes-tendero", status_code=201)
+async def solicitar_ser_tendero(datos: dict) -> dict:
+    return _ok(s.solicitar_ser_tendero, **datos)
+
+
+@app.get("/internal/identidad/solicitudes-tendero")
+async def consultar_solicitud_tendero(whatsapp: str) -> dict:
+    return s.consultar_solicitud_tendero(whatsapp)
+
+
+@app.put("/internal/identidad/solicitudes-tendero/{solicitud_id}")
+async def corregir_solicitud_tendero(solicitud_id: str, datos: dict) -> dict:
+    return _ok(s.corregir_solicitud_tendero, solicitud_id=solicitud_id, **datos)
+
+
+# ------------------------------------------- panel: /admin mínimo para solicitudes
+# El backend de Go implementa la API /admin completa (panel-de-control-v2.md). Aquí solo
+# lo necesario para probar el ciclo de una solicitud de tendero de punta a punta.
+
+async def avisar_al_agente(whatsapp: str, aviso: str) -> None:
+    async with httpx.AsyncClient(timeout=180) as cliente:
+        r = await cliente.post(f"{AGENTE_URL}/internal/avisos", json={"whatsapp": whatsapp, "aviso": aviso},
+                               headers={"X-Servicio-Token": SERVICIO_TOKEN})
+    log.info("aviso al agente para %s -> %s", whatsapp[-4:], r.status_code)
+
+
+@app.get("/admin/solicitudes-tendero")
+async def listar_solicitudes(estado: str = "") -> dict:
+    return s.listar_solicitudes(estado)
+
+
+@app.get("/admin/solicitudes-tendero/{solicitud_id}")
+async def detalle_solicitud(solicitud_id: str) -> dict:
+    return _ok(s.detalle_solicitud, solicitud_id=solicitud_id)
+
+
+@app.post("/admin/solicitudes-tendero/{solicitud_id}/{accion}")
+async def decidir_solicitud(solicitud_id: str, accion: str, datos: dict, tareas: BackgroundTasks) -> dict:
+    decision = {"aprobar": "aprobar", "rechazar": "rechazar", "pedir-correccion": "pedir_correccion"}.get(accion)
+    if decision is None:
+        raise HTTPException(404)
+    r = _ok(s.decidir_solicitud, solicitud_id=solicitud_id, decision=decision, motivo=datos.get("motivo", ""),
+            nivel=datos.get("nivel", "basico"), campos=datos.get("campos"))
+    tareas.add_task(avisar_al_agente, r["whatsapp"], r["aviso"])
+    return r
+
+
+@app.get("/dev/solicitudes", response_class=HTMLResponse)
+async def pagina_solicitudes() -> str:
+    """Página mínima para decidir solicitudes mientras el panel no está conectado."""
+    filas = []
+    for x in s.listar_solicitudes()["items"]:
+        checks = " ".join(f"{c['clave']}:{c['estado']}" for c in x["checks"])
+        acciones = ""
+        if x["estado"] == "en_revision":
+            acciones = "".join(
+                f"<form method=post action='/dev/solicitudes/{x['id']}/{a}' style='display:inline'>"
+                f"<button>{t}</button></form> "
+                for a, t in [("aprobar", "Aprobar (básico)"), ("pedir-correccion", "Pedir corregir ubicación"),
+                             ("rechazar", "Rechazar")])
+        filas.append(f"<tr><td>{x['id']}</td><td>{x['tienda']['nombre']}</td><td>{x['estado']}</td>"
+                     f"<td><small>{checks}</small></td><td>{acciones}</td></tr>")
+    tabla = "".join(filas) or "<tr><td colspan=5>Sin solicitudes</td></tr>"
+    return _pagina("Solicitudes de tendero (dev)",
+                   "<table border=1 cellpadding=6 style='border-collapse:collapse;font-size:14px'>"
+                   "<tr><th>Id</th><th>Tienda</th><th>Estado</th><th>Checks</th><th>Acción</th></tr>"
+                   f"{tabla}</table><p><a href='/dev/solicitudes'>Recargar</a></p>")
+
+
+@app.post("/dev/solicitudes/{solicitud_id}/{accion}", response_class=HTMLResponse)
+async def decidir_desde_pagina(solicitud_id: str, accion: str, tareas: BackgroundTasks) -> str:
+    datos = {"motivo": "Revisión manual desde la página de desarrollo.", "nivel": "basico",
+             "campos": ["ubicacion"] if accion == "pedir-correccion" else None}
+    try:
+        await decidir_solicitud(solicitud_id, accion, datos, tareas)
+        cuerpo = "<p>Listo. El agente le avisa a la persona por su chat.</p>"
+    except ErrorContrato as e:
+        cuerpo = f"<p>{e.mensaje}</p>"
+    return _pagina("Decisión registrada", cuerpo + "<p><a href='/dev/solicitudes'>Volver</a></p>")
 
 
 # -------------------------------------------------------------------- mapa

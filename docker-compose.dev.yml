@@ -21,6 +21,8 @@ services:
       PUBLIC_BASE_URL: http://localhost:8190
       OP_FINISH_URL: http://localhost:${AGENTE_PUERTO:-8088}/op/finish
       DIDIT_CALLBACK_URL: http://agente:8080/webhook/didit
+      # Avisos del panel al agente (POST /internal/avisos).
+      AGENTE_URL: http://agente:8080
     ports: ["8190:8190"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8190/health')"]
@@ -51,6 +53,7 @@ services:
     env_file: .env
     environment:
       MODO_HERRAMIENTAS: mcp
+      SERVICIO_TOKEN: ${SERVICIO_TOKEN:-dev-token}
       MCP_IDENTIDAD_URL: http://mcp-identidad:8104/mcp
       MCP_MAPA_URL: http://mcp-mapa:8102/mcp
       MCP_CAJA_URL: http://mcp-caja:8103/mcp
