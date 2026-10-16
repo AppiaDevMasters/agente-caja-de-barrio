@@ -1,0 +1,23 @@
+[project]
+name = "agente-caja-de-barrio"
+version = "0.1.0"
+description = "Agente conversacional de Caja de Barrio: gateway FastAPI y coordinador Google ADK con sub-agentes conectados a servidores MCP."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "google-adk[mcp]==2.5.0",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.16.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
