@@ -1,0 +1,61 @@
+# Cadena completa para probar sin el backend de Go:
+#   agente (modo mcp) → mcp-identidad / mcp-mapa / mcp-caja / mcp-pagos → backend simulado
+# Los repos de los MCP deben estar clonados junto a este (../mcp-*-caja-de-barrio).
+# Cuando el backend de Go esté listo, basta con apuntar BACKEND_URL de los MCP a él.
+#
+#   docker compose -f docker-compose.dev.yml up -d --build
+x-mcp: &mcp
+  environment: &mcp-env
+    BACKEND_URL: http://backend-simulado:8190/internal
+    SERVICIO_TOKEN: ${SERVICIO_TOKEN:-dev-token}
+  depends_on: [backend-simulado]
+  restart: unless-stopped
+
+services:
+  backend-simulado:
+    build: .
+    command: ["uvicorn", "dev.backend_simulado:app", "--host", "0.0.0.0", "--port", "8190"]
+    environment:
+      SERVICIO_TOKEN: ${SERVICIO_TOKEN:-dev-token}
+      # Links de las páginas simuladas de billetera y Didit (se abren en el navegador).
+      PUBLIC_BASE_URL: http://localhost:8190
+      OP_FINISH_URL: http://localhost:${AGENTE_PUERTO:-8088}/op/finish
+      DIDIT_CALLBACK_URL: http://agente:8080/webhook/didit
+    ports: ["8190:8190"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8190/health')"]
+    restart: unless-stopped
+
+  mcp-identidad:
+    <<: *mcp
+    build: ../mcp-identidad-caja-de-barrio
+    environment: {<<: *mcp-env, PUERTO: "8104"}
+
+  mcp-mapa:
+    <<: *mcp
+    build: ../mcp-mapa-caja-de-barrio
+    environment: {<<: *mcp-env, PUERTO: "8102"}
+
+  mcp-caja:
+    <<: *mcp
+    build: ../mcp-caja-de-barrio
+    environment: {<<: *mcp-env, PUERTO: "8103"}
+
+  mcp-pagos:
+    <<: *mcp
+    build: ../mcp-pagos-caja-de-barrio
+    environment: {<<: *mcp-env, PUERTO: "8101"}
+
+  agente:
+    build: .
+    env_file: .env
+    environment:
+      MODO_HERRAMIENTAS: mcp
+      MCP_IDENTIDAD_URL: http://mcp-identidad:8104/mcp
+      MCP_MAPA_URL: http://mcp-mapa:8102/mcp
+      MCP_CAJA_URL: http://mcp-caja:8103/mcp
+      MCP_PAGOS_URL: http://mcp-pagos:8101/mcp
+      PUBLIC_BASE_URL: http://localhost:${AGENTE_PUERTO:-8088}
+    ports: ["${AGENTE_PUERTO:-8088}:8080"]
+    depends_on: [mcp-identidad, mcp-mapa, mcp-caja, mcp-pagos]
+    restart: unless-stopped

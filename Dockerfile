@@ -7,6 +7,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY agente ./agente
+COPY dev ./dev
 
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s --retries=3 \
