@@ -26,10 +26,27 @@ Con Docker (queda en el puerto 8088 porque el 8080 suele estar ocupado; se cambi
 docker compose up -d --build
 ```
 
-Abre <http://localhost:8088> (o el puerto de uvicorn si lo corres sin Docker): es el chat web (plan B) que se comporta como WhatsApp. El botón
-📍 envía la ubicación de Ruta N. En modo simulado, los links de aprobación de pago y de
-verificación facial abren páginas de prueba (`/simulador/billetera`, `/simulador/didit`) que disparan
-los mismos webhooks que la billetera real y Didit.
+Abre <http://localhost:8088>: es el chat web (plan B) con **dos paneles**, cliente y tendero, que se
+comporta como WhatsApp. El botón 📍 envía la ubicación de Ruta N. En modo simulado, los links de la
+billetera (cupo) y de Didit abren páginas de prueba que disparan los mismos webhooks reales.
+
+| Número simulado | Quién |
+| --- | --- |
+| `573000000001` | Laura (cliente, billetera COP) |
+| `573000000002` | Rosa (cliente, paga con la billetera USD de Andrés) |
+| `573000000010` | Don Jaime, Tienda Don Jaime (tendero) |
+| `573000000011`–`14` | Tenderos de las otras tiendas semilla |
+| cualquier otro | Persona no registrada |
+
+## Reglas de oro
+
+1. El agente habla con ambas partes (cliente y tendero).
+2. Toda operación empieza con la verificación de identidad en Didit.
+3. La entrega se confirma por ambas partes.
+4. Comisión del tendero auto-calculada por liquidez + 1% fijo para Caja de Barrio.
+5. Políticas obligatorias; el pago se aprueba escribiendo APROBAR en el chat contra un cupo aprobado una vez en la billetera.
+
+Detalle de lo que cambia en la base y el panel: [docs/cambios-para-backend-y-panel.md](docs/cambios-para-backend-y-panel.md).
 
 ## Endpoints
 
@@ -37,7 +54,8 @@ los mismos webhooks que la billetera real y Didit.
 | --- | --- |
 | `GET/POST /webhook/whatsapp` | Verificación y mensajes entrantes de Meta (texto, ubicación, botones) |
 | `POST /chat`, `GET /chat/pendientes`, `GET /` | Chat web (plan B) |
-| `GET /op/finish` | Vuelta del grant interactivo de Open Payments → `continuar_permiso` |
+| `GET /op/finish` | Vuelta del grant interactivo (cupo) de Open Payments → `continuar_permiso` |
+| `GET /politicas` | Políticas que la persona debe aceptar |
 | `POST /webhook/didit` | Resultado de Didit (firma `X-Signature-V2`) → `marcar_face_match` |
 | `GET /health` | Salud del contenedor |
 
