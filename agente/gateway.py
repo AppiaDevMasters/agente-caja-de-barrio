@@ -14,8 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from agente import whatsapp
-from agente.agentes import USUARIO_POR_RESERVA
+from agente import consentimiento, whatsapp
 from agente.config import get_settings
 from agente.conversacion import Conversaciones
 from agente.herramientas import llamar_interna
@@ -70,12 +69,12 @@ async def procesar_y_entregar(usuario: str, texto: str) -> None:
     await entregar(usuario, await procesar(usuario, texto))
 
 
-async def avisar_por_reserva(reserva_id: str, aviso: str) -> None:
-    usuario = USUARIO_POR_RESERVA.get(reserva_id)
-    if usuario is None:
-        log.warning("reserva_id=%s sin usuario conocido para avisar", reserva_id)
-        return
-    await procesar_y_entregar(usuario, f"[sistema] {aviso} (reserva_id={reserva_id})")
+async def avisar(usuario: str, aviso: str) -> None:
+    """Le cuenta algo a un usuario en su propia sesión: el agente lo redacta y se lo entrega."""
+    await procesar_y_entregar(usuario, f"{consentimiento.PREFIJO_SISTEMA} {aviso}")
+
+
+consentimiento.NOTIFICADOR = avisar
 
 
 # ------------------------------------------------------------------- salud
@@ -128,6 +127,13 @@ async def chat_web() -> str:
     return (_estaticos / "chat.html").read_text(encoding="utf-8")
 
 
+# --------------------------------------------------------------- políticas
+
+@app.get("/politicas", response_class=HTMLResponse)
+async def politicas() -> str:
+    return (_estaticos / "politicas.html").read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------- Open Payments: fin del grant
 
 def _pagina(titulo: str, cuerpo: str) -> str:
@@ -137,19 +143,17 @@ def _pagina(titulo: str, cuerpo: str) -> str:
 
 
 @app.get("/op/finish", response_class=HTMLResponse)
-async def op_finish(tareas: BackgroundTasks, reserva_id: str,
-                    interact_ref: str = "", result: str = "") -> str:
+async def op_finish(tareas: BackgroundTasks, grant_id: str, interact_ref: str = "", result: str = "") -> str:
     # TODO(mcp-pagos): verificar el `hash` del callback interactivo antes de continuar el grant.
     if result == "grant_rejected" or not interact_ref:
-        tareas.add_task(avisar_por_reserva, reserva_id, "La persona rechazó el pago en su billetera.")
-        return _pagina("Pago rechazado", "<p>No se hizo ningún cobro. Puedes volver a WhatsApp.</p>")
-    r = await llamar_interna("continuar_permiso", reserva_id=reserva_id, interact_ref=interact_ref)
+        return _pagina("Cupo rechazado", "<p>No se aprobó ningún cupo. Puedes volver a WhatsApp.</p>")
+    r = await llamar_interna("continuar_permiso", grant_id=grant_id, interact_ref=interact_ref)
     if "error" in r:
-        log.warning("reserva_id=%s continuar_permiso falló: %s", reserva_id, r["error"])
+        log.warning("grant_id=%s continuar_permiso falló: %s", grant_id, r["error"])
         return _pagina("No pudimos confirmar", f"<p>{r['error']}</p>")
-    log.info("reserva_id=%s permiso aprobado", reserva_id)
-    tareas.add_task(avisar_por_reserva, reserva_id, "La persona aprobó el pago en su billetera.")
-    return _pagina("¡Listo!", "<p>Aprobaste el pago. Vuelve a WhatsApp para seguir.</p>")
+    log.info("grant_id=%s cupo aprobado persona_id=%s", grant_id, r["persona_id"])
+    tareas.add_task(avisar, r["whatsapp"], "La persona aprobó su cupo en la billetera.")
+    return _pagina("¡Listo!", "<p>Aprobaste tu cupo. Vuelve a WhatsApp para seguir.</p>")
 
 
 # ---------------------------------------------------------------- Didit
@@ -161,12 +165,13 @@ def _firma_didit_valida(cuerpo: bytes, firma: str) -> bool:
     return hmac.compare_digest(esperada, firma)
 
 
-async def _resultado_facial(reserva_id: str, session_id: str, aprobado: bool) -> dict:
-    r = await llamar_interna("marcar_face_match", reserva_id=reserva_id, aprobado=aprobado, session_id=session_id)
-    if "error" not in r:
-        aviso = "La verificación facial fue APROBADA." if aprobado else \
-            "La verificación facial fue RECHAZADA: la cara no coincide."
-        await avisar_por_reserva(reserva_id, aviso)
+async def _resultado_facial(session_id: str, aprobado: bool) -> dict:
+    r = await llamar_interna("marcar_face_match", session_id=session_id, aprobado=aprobado)
+    if "error" in r:
+        log.warning("session_id=%s marcar_face_match falló: %s", session_id, r["error"])
+        return r
+    aviso = "La verificación de identidad fue APROBADA." if aprobado else         "La verificación de identidad fue RECHAZADA: la cara no coincide."
+    await avisar(r["whatsapp"], f"{aviso} (motivo: {r['motivo']})")
     return r
 
 
@@ -180,9 +185,7 @@ async def webhook_didit(request: Request, tareas: BackgroundTasks) -> dict:
     estado = datos.get("status")
     if estado not in ("Approved", "Declined"):
         return {"ok": True, "ignorado": estado}
-    # mcp-identidad crea la sesión con vendor_data = reserva_id.
-    tareas.add_task(_resultado_facial, datos.get("vendor_data", ""), datos.get("session_id", ""),
-                    estado == "Approved")
+    tareas.add_task(_resultado_facial, datos.get("session_id", ""), estado == "Approved")
     return {"ok": True}
 
 
@@ -194,18 +197,24 @@ def _solo_simulado() -> None:
 
 
 @app.get("/simulador/billetera", response_class=HTMLResponse)
-async def simulador_billetera(reserva_id: str, interact_ref: str) -> str:
+async def simulador_billetera(grant_id: str, interact_ref: str) -> str:
     _solo_simulado()
-    ok = f"/op/finish?reserva_id={reserva_id}&interact_ref={interact_ref}"
-    no = f"/op/finish?reserva_id={reserva_id}&result=grant_rejected"
-    return _pagina("Billetera de prueba", f"<p>Caja de Barrio pide permiso para pagar el retiro "
-                   f"<code>{reserva_id}</code>.</p><p><a href='{ok}'>Aprobar</a> · <a href='{no}'>Rechazar</a></p>")
+    from agente.herramientas import simuladas
+
+    g = simuladas.ALMACEN.grants.get(grant_id)
+    if g is None:
+        raise HTTPException(404, "Permiso inexistente")
+    ok = f"/op/finish?grant_id={grant_id}&interact_ref={interact_ref}"
+    no = f"/op/finish?grant_id={grant_id}&result=grant_rejected"
+    return _pagina("Billetera de prueba", f"<p>Caja de Barrio pide un cupo para pagar tus retiros: hasta "
+                   f"<b>{g['limite']:,} {g['moneda']}</b> cada 7 días. Cada retiro lo apruebas en el chat.</p>"
+                   f"<p><a href='{ok}'>Aprobar cupo</a> · <a href='{no}'>Rechazar</a></p>")
 
 
 @app.get("/simulador/didit", response_class=HTMLResponse)
 async def simulador_didit(session_id: str) -> str:
     _solo_simulado()
-    return _pagina("Verificación facial de prueba",
+    return _pagina("Verificación de identidad de prueba",
                    f"<p>Sesión <code>{session_id}</code></p>"
                    f"<p><a href='/simulador/didit/resultado?session_id={session_id}&aprobado=true'>La cara coincide</a>"
                    f" · <a href='/simulador/didit/resultado?session_id={session_id}&aprobado=false'>"
@@ -215,10 +224,5 @@ async def simulador_didit(session_id: str) -> str:
 @app.get("/simulador/didit/resultado", response_class=HTMLResponse)
 async def simulador_didit_resultado(session_id: str, aprobado: bool, tareas: BackgroundTasks) -> str:
     _solo_simulado()
-    from agente.herramientas import simuladas
-
-    sesion = simuladas.ALMACEN.sesiones_faciales.get(session_id)
-    if sesion is None:
-        raise HTTPException(404, "Sesión inexistente")
-    tareas.add_task(_resultado_facial, sesion["reserva_id"], session_id, aprobado)
+    tareas.add_task(_resultado_facial, session_id, aprobado)
     return _pagina("Verificación enviada", "<p>Vuelve a WhatsApp.</p>")

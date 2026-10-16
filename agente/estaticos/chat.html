@@ -5,54 +5,78 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Caja de Barrio · chat</title>
 <style>
-  :root { --fondo:#efeae2; --yo:#d9fdd3; --el:#fff; --tinta:#111b21; --borde:#d1d7db; --acento:#008069; }
+  :root { --fondo:#efeae2; --yo:#d9fdd3; --el:#fff; --tinta:#111b21; --borde:#d1d7db; --acento:#008069; --barra:#f0f2f5; }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, sans-serif; background: var(--fondo); color: var(--tinta);
-         display:flex; flex-direction:column; height:100dvh; }
-  header { background: var(--acento); color:#fff; padding:.6rem 1rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
-  header input { width: 11rem; padding:.3rem; border-radius:.3rem; border:0; }
-  #mensajes { flex:1; overflow-y:auto; padding:1rem; display:flex; flex-direction:column; gap:.4rem; }
-  .m { max-width: 80%; padding:.5rem .7rem; border-radius:.5rem; white-space:pre-wrap; word-wrap:break-word; }
+  body { margin:0; font-family: system-ui, sans-serif; color: var(--tinta); background:#d1d7db;
+         display:grid; grid-template-columns: 1fr 1fr; gap:1px; height:100dvh; }
+  @media (max-width: 760px) { body { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }
+  .panel { display:flex; flex-direction:column; min-height:0; background: var(--fondo); }
+  header { background: var(--acento); color:#fff; padding:.5rem .8rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+  header input { width: 9.5rem; padding:.25rem; border-radius:.3rem; border:0; }
+  header .rol { font-weight:700; }
+  .mensajes { flex:1; overflow-y:auto; padding:.8rem; display:flex; flex-direction:column; gap:.4rem; }
+  .m { max-width: 85%; padding:.45rem .65rem; border-radius:.5rem; white-space:pre-wrap; word-wrap:break-word; font-size:.95rem; }
   .yo { align-self:flex-end; background: var(--yo); }
   .el { align-self:flex-start; background: var(--el); }
   .el a { color: var(--acento); }
-  form { display:flex; gap:.4rem; padding:.6rem; background:#f0f2f5; }
-  form input { flex:1; padding:.6rem; border:1px solid var(--borde); border-radius:1.2rem; }
-  button { padding:.5rem .8rem; border:0; border-radius:1.2rem; background: var(--acento); color:#fff; cursor:pointer; }
+  .pensando { align-self:flex-start; color:#667781; font-style:italic; font-size:.85rem; }
+  form { display:flex; gap:.4rem; padding:.5rem; background: var(--barra); }
+  form input { flex:1; min-width:0; padding:.55rem; border:1px solid var(--borde); border-radius:1.2rem; }
+  button { padding:.45rem .75rem; border:0; border-radius:1.2rem; background: var(--acento); color:#fff; cursor:pointer; }
+  header button { background:#ffffff26; }
 </style>
 </head>
 <body>
-<header>
-  <strong>Caja de Barrio</strong>
-  <label>Usuario <input id="usuario" value="573000000001" title="Número de WhatsApp simulado"></label>
-  <button id="ubicacion" type="button" title="Ruta N, Medellín">📍 Enviar ubicación</button>
-</header>
-<div id="mensajes"></div>
-<form id="form"><input id="texto" placeholder="Escribe un mensaje" autocomplete="off"><button>Enviar</button></form>
+<template id="plantilla">
+  <section class="panel">
+    <header>
+      <span class="rol"></span>
+      <input class="usuario" title="Número de WhatsApp simulado">
+      <button type="button" class="ubicacion" title="Ruta N, Medellín">📍 Ubicación</button>
+    </header>
+    <div class="mensajes"></div>
+    <form><input class="texto" placeholder="Escribe un mensaje" autocomplete="off"><button>Enviar</button></form>
+  </section>
+</template>
 <script>
-const $ = (id) => document.getElementById(id);
-const enlazar = (t) => t.replace(/(https?:\/\/[^\s)]+)/g, '<a href="$1" target="_blank">$1</a>');
-function pintar(texto, quien) {
-  const d = document.createElement('div');
-  d.className = 'm ' + quien;
-  if (quien === 'el') d.innerHTML = enlazar(texto.replace(/</g, '&lt;')); else d.textContent = texto;
-  $('mensajes').appendChild(d);
-  $('mensajes').scrollTop = 1e9;
+const enlazar = (t) => t.replace(/(https?:\/\/[^\s)*]+)/g, '<a href="$1" target="_blank">$1</a>');
+
+function crearPanel(rol, usuario) {
+  const panel = document.getElementById('plantilla').content.firstElementChild.cloneNode(true);
+  const $ = (c) => panel.querySelector(c);
+  $('.rol').textContent = rol;
+  $('.usuario').value = usuario;
+  const pintar = (texto, quien) => {
+    const d = document.createElement('div');
+    d.className = 'm ' + quien;
+    if (quien === 'el') d.innerHTML = enlazar(texto.replace(/</g, '&lt;')); else d.textContent = texto;
+    $('.mensajes').appendChild(d);
+    $('.mensajes').scrollTop = 1e9;
+  };
+  const enviar = async (texto) => {
+    pintar(texto, 'yo');
+    const espera = document.createElement('div');
+    espera.className = 'pensando'; espera.textContent = 'escribiendo…';
+    $('.mensajes').appendChild(espera);
+    try {
+      const r = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ usuario: $('.usuario').value, mensaje: texto }) });
+      (await r.json()).respuestas.forEach((t) => pintar(t, 'el'));
+    } finally { espera.remove(); }
+  };
+  $('form').onsubmit = (e) => { e.preventDefault(); const t = $('.texto').value.trim(); if (t) { $('.texto').value = ''; enviar(t); } };
+  $('.ubicacion').onclick = () => enviar('[ubicación] lat=6.27660, lon=-75.55830');
+  setInterval(async () => {
+    try {
+      const r = await fetch('/chat/pendientes?usuario=' + encodeURIComponent($('.usuario').value));
+      (await r.json()).respuestas.forEach((t) => pintar(t, 'el'));
+    } catch (_) {}
+  }, 2000);
+  document.body.appendChild(panel);
 }
-async function enviar(texto) {
-  pintar(texto, 'yo');
-  const r = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ usuario: $('usuario').value, mensaje: texto }) });
-  (await r.json()).respuestas.forEach((t) => pintar(t, 'el'));
-}
-$('form').onsubmit = (e) => { e.preventDefault(); const t = $('texto').value.trim(); if (t) { $('texto').value = ''; enviar(t); } };
-$('ubicacion').onclick = () => enviar('[ubicación] lat=6.27660, lon=-75.55830');
-setInterval(async () => {
-  try {
-    const r = await fetch('/chat/pendientes?usuario=' + encodeURIComponent($('usuario').value));
-    (await r.json()).respuestas.forEach((t) => pintar(t, 'el'));
-  } catch (_) {}
-}, 2000);
+
+crearPanel('Cliente', '573000000001');   // Laura
+crearPanel('Tendero', '573000000010');   // Don Jaime
 </script>
 </body>
 </html>

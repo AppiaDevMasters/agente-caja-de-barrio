@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Políticas de Caja de Barrio</title>
+<style>
+  :root { --tinta:#111b21; --suave:#54656f; --acento:#008069; --fondo:#ffffff; --caja:#f0f2f5; }
+  @media (prefers-color-scheme: dark) { :root { --tinta:#e9edef; --suave:#aebac1; --fondo:#111b21; --caja:#202c33; } }
+  body { margin:0; background:var(--fondo); color:var(--tinta); font:16px/1.55 system-ui, sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 1.5rem 16px 3rem; }
+  h1 { color: var(--acento); font-size: 1.5rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.05rem; margin-top: 1.6rem; }
+  .version { color: var(--suave); font-size: .9rem; }
+  .resumen { background: var(--caja); border-radius: .6rem; padding: .8rem 1rem; }
+  li { margin: .3rem 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Términos y autorización de tratamiento de datos</h1>
+  <p class="version">Versión v1-2026-10 · Prototipo de la Open Payments Hackathon Medellín 2026</p>
+
+  <div class="resumen">
+    <strong>En corto:</strong>
+    <ul>
+      <li>Usamos tu nombre, cédula, número de WhatsApp y billetera para que puedas retirar efectivo en tiendas del barrio.</li>
+      <li>Antes de cada retiro verificamos que eres tú con una prueba de tu cara (Didit). No guardamos tus fotos.</li>
+      <li>Guardamos tus aprobaciones de pago y confirmaciones de entrega para protegerte a ti y al tendero.</li>
+    </ul>
+    Para aceptar, responde <strong>ACEPTO</strong> en el chat. Si no aceptas, no podrás usar el servicio.
+  </div>
+
+  <h2>1. Responsable</h2>
+  <p>Caja de Barrio (equipo AppiaDevMaster) es responsable del tratamiento de tus datos personales, conforme a
+  la Ley 1581 de 2012 y sus decretos reglamentarios.</p>
+
+  <h2>2. Datos que tratamos</h2>
+  <ul>
+    <li>Identificación: nombre, tipo y número de documento (CC o PPT), validados con Verifik.</li>
+    <li>Contacto: número de WhatsApp.</li>
+    <li>Financieros: dirección de tu billetera de Open Payments, montos, comisiones y estado de cada pago.</li>
+    <li>Ubicación: la que compartes para encontrar la tienda más cercana.</li>
+    <li>Biométricos (dato sensible): la verificación de tu cara y prueba de vida la hace Didit. Nosotros solo
+    guardamos la referencia y el resultado de cada sesión, nunca tus fotos ni las de tu documento.</li>
+  </ul>
+
+  <h2>3. Para qué los usamos</h2>
+  <ul>
+    <li>Confirmar tu identidad antes de cada retiro y prevenir suplantación y fraude.</li>
+    <li>Encontrar tiendas con efectivo, apartar el dinero y cobrar el retiro desde tu billetera.</li>
+    <li>Calcular las comisiones: la de la tienda depende de cuánto de su efectivo disponible usa tu retiro, y
+    Caja de Barrio cobra el 1% de cada transacción. Siempre verás el desglose antes de aprobar.</li>
+    <li>Llevar registro de tus aprobaciones (cuando escribes APROBAR) y de las confirmaciones de entrega del
+    tendero y tuyas, para resolver reclamos.</li>
+    <li>Aplicar topes y alertas de riesgo, que pueden pausar o bloquear una cuenta.</li>
+  </ul>
+
+  <h2>4. Datos sensibles</h2>
+  <p>Los datos biométricos son sensibles. No estás obligado a autorizarlos, pero sin la verificación de identidad
+  no es posible hacer retiros, porque es la medida que protege tu dinero.</p>
+
+  <h2>5. Con quién los compartimos</h2>
+  <p>Con Verifik (validación del documento), Didit (verificación facial), los proveedores de tu billetera de
+  Open Payments (para procesar el pago) y con el tendero solo tu primer nombre, el monto y el código de retiro.</p>
+
+  <h2>6. Tus derechos</h2>
+  <p>Puedes conocer, actualizar, rectificar y pedir la supresión de tus datos, revocar esta autorización y
+  presentar quejas ante la Superintendencia de Industria y Comercio. Escríbenos por el mismo chat.</p>
+
+  <h2>7. Aprobación de pagos</h2>
+  <p>Una sola vez apruebas en tu billetera un cupo con tope. Después, cada retiro solo se paga cuando escribes
+  APROBAR en el chat; guardamos ese mensaje con fecha y hora. El dinero no se entrega hasta que el pago esté
+  completado, y la entrega se cierra cuando tú y el tendero la confirman.</p>
+
+  <p class="version">Documento de prototipo: debe revisarlo un abogado antes de operar con usuarios reales.</p>
+</main>
+</body>
+</html>
