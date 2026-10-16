@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     mcp_identidad_url: str = "http://mcp-identidad:8104/mcp"
 
     public_base_url: str = "http://localhost:8080"
+    # Token que el backend manda en X-Servicio-Token al llamar /internal/avisos. Vacío: se rechaza todo.
+    servicio_token: str = ""
 
 
 @lru_cache

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 from collections import defaultdict
@@ -103,6 +104,24 @@ async def recibir_whatsapp(request: Request, tareas: BackgroundTasks) -> dict:
 
 
 # ------------------------------------------------------------- chat web (plan B)
+
+# --------------------------------------------------- avisos del backend (panel)
+
+class Aviso(BaseModel):
+    whatsapp: str
+    aviso: str
+
+
+@app.post("/internal/avisos", status_code=202)
+async def recibir_aviso(a: Aviso, request: Request, tareas: BackgroundTasks) -> dict:
+    """El backend pide avisarle algo a una persona (por ejemplo, que el panel aprobó su tienda)."""
+    token = get_settings().servicio_token
+    if not token or not hmac.compare_digest(request.headers.get("X-Servicio-Token", ""), token):
+        raise HTTPException(401, "Token de servicio inválido")
+    log.info("aviso del backend para whatsapp=*%s", a.whatsapp[-4:])
+    tareas.add_task(avisar, a.whatsapp, a.aviso)
+    return {"ok": True}
+
 
 class MensajeChat(BaseModel):
     usuario: str
