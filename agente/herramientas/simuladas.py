@@ -130,6 +130,29 @@ class Reserva:
 
 
 @dataclass
+class SolicitudTendero:
+    id: str
+    whatsapp: str
+    nombre: str
+    tipo_documento: str
+    cedula: str
+    nombre_tienda: str
+    direccion: str
+    lat: float
+    lon: float
+    wallet_address: str
+    efectivo_estimado_cop: int
+    creada_en: datetime
+    estado: str = "verificando"  # verificando, en_revision, correccion_pedida, aprobada, rechazada
+    verificacion_session: Optional[str] = None
+    motivo: Optional[str] = None
+    campos_a_corregir: list[str] = field(default_factory=list)
+    nivel: Optional[str] = None
+    tienda_id: Optional[str] = None
+    historial: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class Almacen:
     personas: dict[str, Persona] = field(default_factory=dict)
     tiendas: dict[str, Tienda] = field(default_factory=dict)
@@ -140,6 +163,7 @@ class Almacen:
     sesiones_faciales: dict[str, dict] = field(default_factory=dict)
     alertas: list[dict] = field(default_factory=list)
     # Registros de auditoría que en la base real son tablas propias.
+    solicitudes_tendero: dict[str, SolicitudTendero] = field(default_factory=dict)
     aceptaciones_politicas: list[dict] = field(default_factory=list)
     aprobaciones_pago: list[dict] = field(default_factory=list)
     confirmaciones_entrega: list[dict] = field(default_factory=list)
@@ -236,6 +260,9 @@ def consultar_persona(whatsapp: str) -> dict:
         return {"rol": "tendero", "tienda_id": tienda.id, "nombre_tienda": tienda.nombre,
                 "nombre": tienda.nombre_tendero, "efectivo_libre_cop": tienda.libre_cop}
     base = {"politicas_aceptadas": _acepto_politicas(whatsapp), "politicas_version": POLITICAS_VERSION}
+    solicitud = _solicitud_abierta(whatsapp)
+    if solicitud:
+        base["solicitud_id"], base["estado_solicitud"] = solicitud.id, solicitud.estado
     for p in ALMACEN.personas.values():
         if p.whatsapp == whatsapp:
             cupo = p.cupo or {}
@@ -244,6 +271,8 @@ def consultar_persona(whatsapp: str) -> dict:
                     "verificacion_vigente": _verificacion_vigente(p),
                     "cupo_aprobado": bool(cupo), "cupo_disponible": cupo.get("limite", 0) - cupo.get("usado", 0),
                     "cupo_moneda": cupo.get("moneda")}
+    if solicitud:
+        return {**base, "rol": "solicitante", "persona_id": None, "nombre": solicitud.nombre}
     return {**base, "rol": "no_registrada", "persona_id": None}
 
 
@@ -294,13 +323,27 @@ def registrar_persona(whatsapp: str, tipo: str, numero: str, wallet_address: str
     return {"persona_id": p.id, "estado_registro": p.estado_registro}
 
 
-def crear_sesion_facial(persona_id: str, motivo: str) -> dict:
+def crear_sesion_facial(persona_id: str = "", motivo: str = "retiro", solicitud_id: str = "") -> dict:
     """Crea la sesión de prueba de vida y face match en Didit. Es el primer paso de toda operación.
 
     Args:
-        persona_id: Id de la persona a verificar.
-        motivo: "alta" (registro) o "retiro" (inicio de un retiro).
+        persona_id: Id de la persona a verificar (clientes).
+        motivo: "alta" (registro), "retiro" (inicio de un retiro) o "alta_tendero" (solicitud de tienda).
+        solicitud_id: Id de la solicitud de tendero, en lugar de persona_id, cuando el motivo es "alta_tendero".
     """
+    base = get_settings().public_base_url
+    if solicitud_id:
+        sol = ALMACEN.solicitudes_tendero.get(solicitud_id)
+        if sol is None:
+            return {"error": f"No existe la solicitud {solicitud_id}."}
+        if not _acepto_politicas(sol.whatsapp):
+            return {"error": "Sin aceptar las políticas no se puede verificar la identidad."}
+        if sol.estado != "verificando":
+            return {"error": f"La solicitud está {sol.estado}; no necesita verificación."}
+        session_id = _nuevo_id("did")
+        ALMACEN.sesiones_faciales[session_id] = {"persona_id": None, "solicitud_id": solicitud_id,
+                                                 "motivo": "alta_tendero", "aprobada": None, "score": None}
+        return {"session_id": session_id, "url_verificacion": f"{base}/simulador/didit?session_id={session_id}"}
     p = ALMACEN.personas.get(persona_id)
     if p is None:
         return {"error": f"No existe la persona {persona_id}."}
@@ -311,7 +354,6 @@ def crear_sesion_facial(persona_id: str, motivo: str) -> dict:
     session_id = _nuevo_id("did")
     ALMACEN.sesiones_faciales[session_id] = {"persona_id": persona_id, "motivo": motivo,
                                              "aprobada": None, "score": None}
-    base = get_settings().public_base_url
     return {"session_id": session_id, "url_verificacion": f"{base}/simulador/didit?session_id={session_id}"}
 
 
@@ -332,8 +374,17 @@ def marcar_face_match(session_id: str, aprobado: bool) -> dict:
     s = ALMACEN.sesiones_faciales.get(session_id)
     if s is None:
         return {"error": f"No existe la sesión {session_id}."}
-    p = ALMACEN.personas[s["persona_id"]]
     s["aprobada"], s["score"] = aprobado, 0.97 if aprobado else 0.12
+    if s.get("solicitud_id"):
+        sol = ALMACEN.solicitudes_tendero[s["solicitud_id"]]
+        sol.verificacion_session = session_id
+        sol.estado = "en_revision" if aprobado else "rechazada"
+        if not aprobado:
+            sol.motivo = "La verificación de identidad no fue aprobada."
+        _historial(sol, "didit", "verificacion_identidad", "aprobada" if aprobado else "rechazada")
+        return {"ok": True, "whatsapp": sol.whatsapp, "persona_id": None, "solicitud_id": sol.id,
+                "motivo": "alta_tendero", "estado_solicitud": sol.estado}
+    p = ALMACEN.personas[s["persona_id"]]
     if aprobado:
         p.verificacion_session, p.verificado_hasta = session_id, ahora() + VIGENCIA_VERIFICACION
         if s["motivo"] == "alta":
@@ -363,6 +414,197 @@ def procesar_webhook_didit(cuerpo: str, firma: str) -> dict:
     if "error" in r:
         return r
     return {"procesado": True, "session_id": session_id, "aprobado": estado == "Approved", **r}
+
+
+# ------------------------------------------------- solicitudes de tendero
+
+_ESTADOS_ABIERTOS = ("verificando", "en_revision", "correccion_pedida")
+
+
+def _solicitud_abierta(whatsapp: str) -> Optional[SolicitudTendero]:
+    abiertas = [x for x in ALMACEN.solicitudes_tendero.values()
+                if x.whatsapp == whatsapp and x.estado in _ESTADOS_ABIERTOS]
+    return max(abiertas, key=lambda x: x.creada_en) if abiertas else None
+
+
+def _historial(sol: SolicitudTendero, actor: str, accion: str, detalle: Optional[str] = None) -> None:
+    sol.historial.append({"ts": ahora().isoformat(), "actor": actor, "accion": accion, "detalle": detalle})
+
+
+def _checks(sol: SolicitudTendero) -> list[dict]:
+    """Señales para que el panel decida. No bloquean la solicitud: solo se muestran."""
+    cedula = verificar_cedula(sol.tipo_documento, sol.cedula)
+    moneda = WALLETS.get(sol.wallet_address, (None, None))[0]
+    sesion = ALMACEN.sesiones_faciales.get(sol.verificacion_session or "", {})
+    duplicados = []
+    if any(p.whatsapp == sol.whatsapp for p in ALMACEN.personas.values()):
+        duplicados.append("el WhatsApp ya es de un cliente")
+    duplicados += [f"la wallet ya está en {t.nombre}" for t in ALMACEN.tiendas.values()
+                   if t.wallet_address == sol.wallet_address]
+
+    def check(clave, ok, detalle_ok, detalle_mal, nivel_mal="error"):
+        return {"clave": clave, "estado": "ok" if ok else nivel_mal, "detalle": detalle_ok if ok else detalle_mal}
+
+    pendiente = sesion.get("aprobada") is None
+    return [
+        check("cedula_valida", cedula.get("valida"), "Verifik: documento válido", "Verifik: documento inválido"),
+        check("face_match", sesion.get("aprobada") is True, f"Didit {sesion.get('score')}",
+              "Didit: pendiente" if pendiente else "Didit: rechazada", "alerta" if pendiente else "error"),
+        check("wallet_resuelve", moneda == "COP", "COP, escala 2",
+              "La wallet no resuelve" if moneda is None else f"La wallet es {moneda}, no COP"),
+        check("duplicados", not duplicados, "Sin coincidencias", "; ".join(duplicados), "alerta"),
+        check("politicas", _acepto_politicas(sol.whatsapp), POLITICAS_VERSION, "No aceptó las políticas vigentes"),
+    ]
+
+
+def solicitar_ser_tendero(whatsapp: str, tipo: str, numero: str, nombre_tienda: str, direccion: str,
+                          lat: float, lon: float, wallet_address: str, efectivo_estimado_cop: int) -> dict:
+    """Crea la solicitud de alguien que quiere registrar su tienda como punto de retiro.
+
+    Después hay que verificar su identidad con crear_sesion_facial(solicitud_id=..., motivo="alta_tendero").
+    La solicitud queda en revisión del equipo de Caja de Barrio, que la aprueba o rechaza desde el panel.
+
+    Args:
+        whatsapp: Número de WhatsApp de quien solicita.
+        tipo: "CC" o "PPT".
+        numero: Número del documento.
+        nombre_tienda: Nombre de la tienda.
+        direccion: Dirección de la tienda.
+        lat: Latitud de la tienda (del pin de ubicación).
+        lon: Longitud de la tienda (del pin de ubicación).
+        wallet_address: Billetera de Open Payments de la tienda (en pesos).
+        efectivo_estimado_cop: Cuánto efectivo maneja la tienda al día, en pesos.
+    """
+    if not _acepto_politicas(whatsapp):
+        return {"error": "Primero debe aceptar las políticas."}
+    if _tienda_de_tendero(whatsapp):
+        return {"error": "Ese número ya es tendero de una tienda activa."}
+    abierta = _solicitud_abierta(whatsapp)
+    if abierta:
+        return {"error": f"Ya tiene una solicitud {abierta.estado} ({abierta.id})."}
+    cedula = verificar_cedula(tipo, numero)
+    if "error" in cedula:
+        return cedula
+    sol = SolicitudTendero(_nuevo_id("sol"), whatsapp, cedula.get("nombre_completo") or "SIN VALIDAR", tipo, numero,
+                           nombre_tienda, direccion, lat, lon, wallet_address, efectivo_estimado_cop, ahora())
+    ALMACEN.solicitudes_tendero[sol.id] = sol
+    _historial(sol, "agente", "solicitud_creada")
+    return {"solicitud_id": sol.id, "estado": sol.estado}
+
+
+def consultar_solicitud_tendero(whatsapp: str) -> dict:
+    """Estado de la solicitud de tienda de ese WhatsApp (la más reciente).
+
+    Args:
+        whatsapp: Número de WhatsApp de quien solicitó.
+    """
+    propias = [x for x in ALMACEN.solicitudes_tendero.values() if x.whatsapp == whatsapp]
+    if not propias:
+        return {"solicitud_id": None, "estado": None}
+    sol = max(propias, key=lambda x: x.creada_en)
+    return {"solicitud_id": sol.id, "estado": sol.estado, "nombre_tienda": sol.nombre_tienda,
+            "motivo": sol.motivo, "campos_a_corregir": sol.campos_a_corregir, "tienda_id": sol.tienda_id}
+
+
+def corregir_solicitud_tendero(solicitud_id: str, direccion: str = "", lat: Optional[float] = None,
+                               lon: Optional[float] = None, wallet_address: str = "", tipo: str = "",
+                               numero: str = "") -> dict:
+    """Corrige los datos que el equipo pidió corregir; la solicitud vuelve a revisión.
+
+    Args:
+        solicitud_id: Id de la solicitud.
+        direccion: Nueva dirección (si se pidió corregir la ubicación).
+        lat: Nueva latitud.
+        lon: Nueva longitud.
+        wallet_address: Nueva billetera (si se pidió corregir la wallet).
+        tipo: Nuevo tipo de documento (si se pidió corregir el documento).
+        numero: Nuevo número de documento.
+    """
+    sol = ALMACEN.solicitudes_tendero.get(solicitud_id)
+    if sol is None:
+        return {"error": f"No existe la solicitud {solicitud_id}."}
+    if sol.estado != "correccion_pedida":
+        return {"error": f"La solicitud está {sol.estado}; no hay nada que corregir."}
+    if direccion:
+        sol.direccion = direccion
+    if lat is not None and lon is not None:
+        sol.lat, sol.lon = lat, lon
+    if wallet_address:
+        sol.wallet_address = wallet_address
+    if tipo and numero:
+        sol.tipo_documento, sol.cedula = tipo, numero
+    sol.estado, sol.campos_a_corregir, sol.motivo = "en_revision", [], None
+    _historial(sol, "agente", "solicitud_corregida")
+    return {"solicitud_id": sol.id, "estado": sol.estado}
+
+
+# --------------------------------------------- panel (lo expone /admin del backend)
+
+AVISOS_SOLICITUD = {
+    "aprobar": "Tu solicitud fue APROBADA: la tienda {tienda} quedó activa en nivel {nivel}. Ya puedes publicar tu "
+               "efectivo del día.",
+    "rechazar": "Tu solicitud para registrar la tienda {tienda} fue RECHAZADA. Motivo: {motivo}",
+    "pedir_correccion": "Para seguir con tu solicitud de la tienda {tienda} necesitamos que corrijas: {campos}. "
+                        "Motivo: {motivo}",
+}
+
+
+def listar_solicitudes(estado: str = "") -> dict:
+    items = [detalle_solicitud(x.id) for x in sorted(ALMACEN.solicitudes_tendero.values(), key=lambda x: x.creada_en)
+             if not estado or x.estado == estado]
+    return {"items": items, "total": len(items)}
+
+
+def detalle_solicitud(solicitud_id: str) -> dict:
+    sol = ALMACEN.solicitudes_tendero.get(solicitud_id)
+    if sol is None:
+        return {"error": f"No existe la solicitud {solicitud_id}."}
+    sesion = ALMACEN.sesiones_faciales.get(sol.verificacion_session or "", {})
+    return {
+        "id": sol.id, "estado": sol.estado, "creada_en": sol.creada_en.isoformat(),
+        "solicitante": {"nombre": sol.nombre, "cedula": "****" + sol.cedula[-4:],
+                        "whatsapp": "*******" + sol.whatsapp[-4:]},
+        "tienda": {"nombre": sol.nombre_tienda, "direccion": sol.direccion, "lat": sol.lat, "lon": sol.lon,
+                   "efectivo_estimado_cop": sol.efectivo_estimado_cop},
+        "wallet": {"address": sol.wallet_address, "resuelve": sol.wallet_address in WALLETS,
+                   "moneda": WALLETS.get(sol.wallet_address, (None,))[0]},
+        "didit": {"liveness": {True: "aprobada", False: "rechazada"}.get(sesion.get("aprobada"), "pendiente"),
+                  "score": sesion.get("score"), "session_id": sol.verificacion_session},
+        "checks": _checks(sol), "motivo": sol.motivo, "campos_a_corregir": sol.campos_a_corregir,
+        "tienda_id": sol.tienda_id, "historial": sol.historial,
+    }
+
+
+def decidir_solicitud(solicitud_id: str, decision: str, motivo: str, nivel: str = "basico",
+                      campos: Optional[list[str]] = None, actor: str = "panel") -> dict:
+    """Aprueba, rechaza o pide corrección. Devuelve a quién avisar y qué decirle."""
+    sol = ALMACEN.solicitudes_tendero.get(solicitud_id)
+    if sol is None:
+        return {"error": f"No existe la solicitud {solicitud_id}."}
+    if decision not in AVISOS_SOLICITUD:
+        return {"error": "La decisión debe ser aprobar, rechazar o pedir_correccion."}
+    if len(motivo.strip()) < 10:
+        return {"error": "El motivo debe tener al menos 10 caracteres."}
+    if sol.estado != "en_revision":
+        return {"error": f"Solo se decide una solicitud en revisión (está {sol.estado})."}
+    if decision == "aprobar":
+        if nivel not in ("basico", "comercio"):
+            return {"error": "El nivel debe ser basico o comercio (aliado requiere cuatro ojos)."}
+        nombre_tendero = sol.nombre.split()[0].title() if sol.nombre else "Tendero"
+        tienda = Tienda(_nuevo_id("tie"), sol.nombre_tienda, sol.direccion, sol.lat, sol.lon, nivel, sol.whatsapp,
+                        nombre_tendero, sol.wallet_address)
+        ALMACEN.tiendas[tienda.id] = tienda
+        sol.estado, sol.nivel, sol.tienda_id = "aprobada", nivel, tienda.id
+    elif decision == "rechazar":
+        sol.estado, sol.motivo = "rechazada", motivo
+    else:
+        if not campos:
+            return {"error": "Indica qué campos debe corregir."}
+        sol.estado, sol.motivo, sol.campos_a_corregir = "correccion_pedida", motivo, list(campos)
+    _historial(sol, actor, decision, motivo)
+    aviso = AVISOS_SOLICITUD[decision].format(tienda=sol.nombre_tienda, nivel=nivel, motivo=motivo,
+                                              campos=", ".join(campos or []))
+    return {"ok": True, "estado": sol.estado, "tienda_id": sol.tienda_id, "whatsapp": sol.whatsapp, "aviso": aviso}
 
 
 # --------------------------------------------------------------------- mcp-mapa
