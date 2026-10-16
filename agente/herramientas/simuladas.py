@@ -18,6 +18,7 @@ para que el agente le explique a la persona qué pasó.
 
 from __future__ import annotations
 
+import json
 import math
 import secrets
 from dataclasses import dataclass, field
@@ -345,6 +346,25 @@ def marcar_face_match(session_id: str, aprobado: bool) -> dict:
     return {"ok": True, "whatsapp": p.whatsapp, "persona_id": p.id, "motivo": s["motivo"]}
 
 
+def procesar_webhook_didit(cuerpo: str, firma: str) -> dict:
+    """INTERNA (gateway /webhook/didit): interpreta el webhook de Didit y registra el resultado.
+
+    El backend real valida `firma` (X-Signature-V2) con DIDIT_WEBHOOK_SECRET; la simulación no firma.
+    """
+    try:
+        datos = json.loads(cuerpo)
+    except ValueError:
+        return {"error": "El webhook de Didit no es JSON válido."}
+    estado = datos.get("status")
+    if estado not in ("Approved", "Declined"):
+        return {"procesado": False, "ignorado": estado}
+    session_id = datos.get("vendor_data") or datos.get("session_id", "")
+    r = marcar_face_match(session_id, estado == "Approved")
+    if "error" in r:
+        return r
+    return {"procesado": True, "session_id": session_id, "aprobado": estado == "Approved", **r}
+
+
 # --------------------------------------------------------------------- mcp-mapa
 
 def buscar_cajas_cercanas(lat: float, lon: float, monto_cop: int, radio_m: int = 1500) -> dict:
@@ -628,8 +648,11 @@ def pedir_cupo(persona_id: str, wallet_cliente: str) -> dict:
             "intervalo": INTERVALO_CUPO}
 
 
-def continuar_permiso(grant_id: str, interact_ref: str) -> dict:
-    """INTERNA (gateway /op/finish): continúa el grant tras la aprobación en la billetera."""
+def continuar_permiso(grant_id: str, interact_ref: str, hash: str = "") -> dict:
+    """INTERNA (gateway /op/finish): continúa el grant tras la aprobación en la billetera.
+
+    El backend real verifica `hash`; la simulación no lo calcula.
+    """
     g = ALMACEN.grants.get(grant_id)
     if g is None or g["interact_ref"] != interact_ref:
         return {"error": "interact_ref inválido."}
@@ -665,12 +688,13 @@ def crear_cobro(wallet_tienda: str, monto_cop: int, reserva_id: str) -> dict:
             "caja_de_barrio_recibe_cop": r.comision_plataforma_cop}
 
 
-def cotizar(wallet_cliente: str, incoming_payment_url: str) -> dict:
+def cotizar(wallet_cliente: str, incoming_payment_url: str, reserva_id: str = "") -> dict:
     """Cotiza cuánto se debita de la billetera de quien paga, con el desglose de comisiones.
 
     Args:
         wallet_cliente: Wallet address de quien paga.
         incoming_payment_url: Cobro de la tienda creado con crear_cobro.
+        reserva_id: Reserva asociada (si se conoce).
     """
     cobro = ALMACEN.cobros.get(incoming_payment_url)
     if cobro is None or wallet_cliente not in WALLETS:
