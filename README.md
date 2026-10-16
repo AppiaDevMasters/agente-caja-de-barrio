@@ -46,6 +46,9 @@ billetera (cupo) y de Didit abren páginas de prueba que disparan los mismos web
 4. Comisión del tendero auto-calculada por liquidez + 1% fijo para Caja de Barrio.
 5. Políticas obligatorias; el pago se aprueba escribiendo APROBAR en el chat contra un cupo aprobado una vez en la billetera.
 
+Además, cualquiera puede **pedir ser tendero** por WhatsApp: políticas, cédula, datos y pin de la tienda, billetera y
+verificación con Didit. La solicitud queda en revisión y el panel la aprueba, rechaza o devuelve para corregir.
+
 Detalle de lo que cambia en la base y el panel: [docs/cambios-para-backend-y-panel.md](docs/cambios-para-backend-y-panel.md).
 
 ## Cadena completa: agente → MCP → backend
@@ -60,7 +63,9 @@ Mientras el backend de Go no esté, `dev/backend_simulado.py` cumple ese contrat
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-Esto levanta el backend simulado (8190), los 4 MCP y el agente en modo `mcp` (8088). Didit y la billetera se
+Esto levanta el backend simulado (8190), los 4 MCP y el agente en modo `mcp` (8088). Mientras el panel no
+esté conectado, las solicitudes de tendero se aprueban, rechazan o devuelven en <http://localhost:8190/dev/solicitudes>
+y el backend simulado le avisa al agente por `/internal/avisos`, igual que lo hará el de Go. Didit y la billetera se
 simulan igual que los reales: Didit le manda el webhook al agente y la billetera redirige a `/op/finish`; el
 agente los reenvía al backend por los MCP. Cuando el backend de Go esté listo, se cambia `BACKEND_URL` de los MCP.
 
@@ -72,6 +77,7 @@ agente los reenvía al backend por los MCP. Cuando el backend de Go esté listo,
 | `POST /chat`, `GET /chat/pendientes`, `GET /` | Chat web (plan B) |
 | `GET /op/finish` | Vuelta del grant interactivo (cupo) de Open Payments → `continuar_permiso` |
 | `GET /politicas` | Políticas que la persona debe aceptar |
+| `POST /internal/avisos` | El backend pide avisarle algo a una persona (decisiones del panel); exige `X-Servicio-Token` |
 | `POST /webhook/didit` | Webhook de Didit: se reenvía sin tocar al backend (`procesar_webhook_didit`), que valida la firma |
 | `GET /health` | Salud del contenedor |
 
