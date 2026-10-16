@@ -16,20 +16,31 @@ from agente.herramientas import simuladas
 # Qué herramientas ve cada agente, agrupadas por servidor MCP.
 PERMISOS: dict[str, dict[str, list[str]]] = {
     "coordinador": {"caja": ["consultar_reserva"]},
-    "identidad": {"identidad": ["consultar_persona", "verificar_cedula", "crear_sesion_facial", "estado_verificacion"]},
+    "identidad": {"identidad": ["consultar_persona", "verificar_cedula", "registrar_persona",
+                                "crear_sesion_facial", "estado_verificacion"]},
     "ubicacion": {
         "mapa": ["buscar_cajas_cercanas", "detalle_tienda", "publicar_efectivo"],
-        "caja": ["reservar_efectivo", "cancelar_reserva"],
+        "caja": ["reservar_efectivo", "cancelar_reserva", "reservas_de_tienda"],
     },
     "riesgo": {"caja": ["evaluar_riesgo"]},
     "pagos": {
-        "pagos": ["resolver_wallet", "crear_cobro", "cotizar", "pedir_permiso", "pagar", "estado_cobro"],
+        "pagos": ["resolver_wallet", "pedir_cupo", "crear_cobro", "cotizar", "pagar", "estado_cobro"],
         "caja": ["consultar_reserva", "confirmar_entrega"],
     },
 }
 
-# Herramientas que solo llama el gateway (webhooks); nunca se exponen al modelo.
-INTERNAS = {"continuar_permiso": "pagos", "marcar_face_match": "caja"}
+# Herramientas que nunca se exponen al modelo. Las llaman el gateway (webhooks) o las
+# herramientas de consentimiento del agente, que antes verifican el mensaje real de la persona.
+INTERNAS = {
+    "continuar_permiso": "pagos",
+    "registrar_aprobacion": "pagos",
+    "marcar_face_match": "identidad",
+    "aceptar_politicas": "identidad",
+    "confirmar_recibido": "caja",
+}
+# Lecturas que el código también necesita (por ejemplo, para avisarle a la contraparte).
+LECTURAS_DESDE_CODIGO = {"consultar_reserva": "caja"}
+_LLAMABLES_DESDE_CODIGO = {**INTERNAS, **LECTURAS_DESDE_CODIGO}
 
 
 def _url_servidor(servidor: str) -> str:
@@ -53,8 +64,8 @@ def herramientas_de(agente: str) -> list[Any]:
 
 
 async def llamar_interna(nombre: str, **argumentos: Any) -> dict:
-    """Llama una herramienta interna (continuar_permiso, marcar_face_match)."""
-    if nombre not in INTERNAS:
+    """Llama una herramienta interna desde código, nunca desde el modelo."""
+    if nombre not in _LLAMABLES_DESDE_CODIGO:
         raise ValueError(f"{nombre} no es una herramienta interna")
     if get_settings().modo_herramientas == "simulado":
         return getattr(simuladas, nombre)(**argumentos)
@@ -62,7 +73,7 @@ async def llamar_interna(nombre: str, **argumentos: Any) -> dict:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
-    async with streamablehttp_client(_url_servidor(INTERNAS[nombre])) as (leer, escribir, _):
+    async with streamablehttp_client(_url_servidor(_LLAMABLES_DESDE_CODIGO[nombre])) as (leer, escribir, _):
         async with ClientSession(leer, escribir) as sesion:
             await sesion.initialize()
             resultado = await sesion.call_tool(nombre, argumentos)
