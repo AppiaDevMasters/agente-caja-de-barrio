@@ -1,8 +1,11 @@
 """Coordinador y sub-agentes de Caja de Barrio (Google ADK).
 
-El coordinador es el único que habla con la persona. Usa a cada especialista
-como herramienta (AgentTool), así conserva el hilo de la conversación y el tono,
-y cada especialista solo ve sus propias herramientas (mínimo privilegio).
+Hay un coordinador por chat: con la persona que retira y con el tendero (cada uno en
+su propia sesión). Usa a cada especialista como herramienta (AgentTool), así conserva
+el hilo y el tono, y cada especialista solo ve sus propias herramientas (mínimo
+privilegio). Las decisiones que dependen del mensaje real de la persona (aceptar
+políticas, aprobar el pago, confirmar que recibió) son herramientas del coordinador
+en `consentimiento.py`, nunca de los especialistas.
 """
 
 from __future__ import annotations
@@ -14,18 +17,16 @@ from google.adk.agents import LlmAgent
 from google.adk.tools import BaseTool, ToolContext
 from google.adk.tools.agent_tool import AgentTool
 
+from agente import consentimiento
 from agente.config import get_settings
 from agente.herramientas import herramientas_de
 
 log = logging.getLogger("agente")
 
-# reserva_id -> user_id (número de WhatsApp o id del chat web). Lo usa el gateway
-# para avisarle a la persona cuando llegan los webhooks de la billetera o de Didit.
-USUARIO_POR_RESERVA: dict[str, str] = {}
-
-# Campos de las respuestas de herramientas que vale la pena recordar en el estado
-# de la sesión, para que el coordinador no pierda los ids entre turnos.
-_CLAVES_ESTADO = ("persona_id", "reserva_id", "incoming_payment_url", "quote_url", "session_id")
+# Campos de las respuestas de herramientas que vale la pena recordar en el estado de la
+# sesión, para que ni el coordinador ni los especialistas tengan que adivinar ids.
+_CLAVES_ESTADO = ("persona_id", "rol", "tienda_id", "politicas_version", "politicas_aceptadas",
+                  "cupo_aprobado", "reserva_id", "incoming_payment_url", "quote_url", "session_id")
 
 # Tope de llamadas a herramientas por especialista en cada encargo: corta bucles de reintentos.
 MAX_LLAMADAS_ESPECIALISTA = 10
@@ -50,16 +51,17 @@ def recordar_ids(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
         return None
     for clave in _CLAVES_ESTADO:
         valor = tool_response.get(clave)
-        if valor:
+        if valor is not None and valor != "":
             tool_context.state[clave] = valor
     if tool.name == "consultar_persona" and tool_response.get("wallet_address"):
         tool_context.state["wallet_cliente"] = tool_response["wallet_address"]
+    if tool.name == "aceptar_politicas":
+        tool_context.state["politicas_aceptadas"] = True
     if tool.name == "buscar_cajas_cercanas":
         vistas = dict(tool_context.state.get("wallets_tiendas") or {})
         vistas.update({t["id"]: t["wallet_address"] for t in tool_response.get("tiendas", [])})
         tool_context.state["wallets_tiendas"] = vistas
     if tool.name == "reservar_efectivo" and tool_response.get("reserva_id"):
-        USUARIO_POR_RESERVA[tool_response["reserva_id"]] = tool_context.session.user_id
         tool_context.state["codigo_retiro"] = tool_response.get("codigo_4_digitos")
         tool_context.state["monto_cop"] = args.get("monto_cop")
         wallet = (tool_context.state.get("wallets_tiendas") or {}).get(args.get("tienda_id"))
@@ -68,15 +70,15 @@ def recordar_ids(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
     return None
 
 
-# Lo que ya se sabe del retiro en curso; ADK lo rellena desde el estado de la sesión.
+# Lo que ya se sabe; ADK lo rellena desde el estado de la sesión.
 _DATOS_CONOCIDOS = """
-Datos ya conocidos de este retiro (úsalos tal cual; si falta alguno, pídeselo al coordinador):
-- persona_id: {persona_id?}
+Datos ya conocidos (úsalos tal cual; si falta alguno que necesites, pídeselo al coordinador):
+- whatsapp: {whatsapp}
+- rol: {rol?} · persona_id: {persona_id?} · tienda_id: {tienda_id?}
 - billetera de quien paga (wallet_cliente): {wallet_cliente?}
-- reserva_id: {reserva_id?}
-- monto_cop: {monto_cop?}
+- reserva_id: {reserva_id?} · monto_cop: {monto_cop?}
 - billetera de la tienda (wallet_tienda): {wallet_tienda?}
-- cobro (incoming_payment_url): {incoming_payment_url?}
+- cobro de la tienda (incoming_payment_url): {incoming_payment_url?}
 - cotización (quote_url): {quote_url?}
 """
 
@@ -88,19 +90,22 @@ no reintentes con otros valores, no adivines billeteras, ids ni montos, y nunca 
 """ + _DATOS_CONOCIDOS
 
 INSTRUCCION_IDENTIDAD = _REGLAS_ESPECIALISTA + """
-Te encargas del registro de personas y de la verificación facial.
-- Para saber quién escribe, usa consultar_persona con el número de WhatsApp.
-- Para registrar, valida la cédula con verificar_cedula y luego crea una sesión facial con motivo "alta".
-- En cada retiro, en el mostrador, crea una sesión facial con motivo "retiro" y la reserva_id.
-- Para saber si la verificación terminó, usa estado_verificacion.
+Te encargas de identificar a quien escribe, registrar personas y verificar su identidad con Didit.
+- consultar_persona con el WhatsApp dice si es "cliente", "tendero" o "no_registrada", si aceptó las
+  políticas, si tiene la identidad verificada vigente y si ya aprobó su cupo en la billetera.
+- Registro: verificar_cedula y luego registrar_persona (con su billetera); después crear_sesion_facial
+  con motivo "alta".
+- Al empezar cada retiro: crear_sesion_facial con motivo "retiro". Reporta el url_verificacion.
+- estado_verificacion dice si una sesión ya terminó.
 """
 
 INSTRUCCION_UBICACION = _REGLAS_ESPECIALISTA + """
-Te encargas de encontrar la tienda y apartar el efectivo.
-- Busca con buscar_cajas_cercanas (monto en pesos, entero). Devuelve las opciones con nombre y distancia.
+Te encargas de las tiendas y de apartar el efectivo.
+- buscar_cajas_cercanas (monto en pesos, entero) devuelve las tiendas con su comisión ya calculada:
+  reporta nombre, distancia, comisión de la tienda, comisión de Caja de Barrio y total.
 - Solo reserva con reservar_efectivo cuando el coordinador te diga qué tienda eligió la persona.
-- Si te piden cancelar, usa cancelar_reserva con un motivo.
-- Los tenderos pueden publicar su efectivo del día con publicar_efectivo.
+- cancelar_reserva siempre con el motivo que te den.
+- Para tenderos: reservas_de_tienda (a quién esperan) y publicar_efectivo (su efectivo del día).
 """
 
 INSTRUCCION_RIESGO = _REGLAS_ESPECIALISTA + """
@@ -109,81 +114,106 @@ Devuelve la decisión ("permitir" o "bloquear") y el motivo, sin suavizarlo.
 """
 
 INSTRUCCION_PAGOS = _REGLAS_ESPECIALISTA + """
-Manejas el pago con Open Payments, siempre en este orden:
-1. crear_cobro en la billetera de la tienda por el monto de la reserva.
-2. cotizar desde la billetera de quien paga hacia ese cobro. Reporta débito, comisión y moneda.
-3. pedir_permiso con esa quote. Reporta el redirect_url: es el link que la persona abre para aprobar.
-Cuando el coordinador te pida pagar (después de la aprobación y del face match):
-4. pagar la reserva. 5. estado_cobro para confirmar que el cobro de la tienda quedó completado.
-Para la entrega: confirmar_entrega con la reserva y el código de 4 dígitos que dice el tendero.
+Manejas el pago con Open Payments.
+- Cupo: si la persona no tiene cupo aprobado, pedir_cupo y reporta el redirect_url, el tope y la moneda.
+  Se aprueba una sola vez en su billetera.
+- Preparar el pago: crear_cobro (monto del retiro, sin comisiones: se suman solas) y luego cotizar
+  desde la billetera de quien paga. Reporta el débito, la moneda y el desglose.
+- Pagar (solo cuando el coordinador lo pida, después de que la persona escribió APROBAR): pagar y
+  luego estado_cobro para confirmar que el cobro de la tienda quedó completado.
+- Entrega del lado del tendero: confirmar_entrega con la reserva y el código de 4 dígitos.
 Nunca digas que un pago se hizo si pagar o estado_cobro no lo confirmaron.
 """
 
 INSTRUCCION_COORDINADOR = """
 Eres Caja de Barrio, el asistente de WhatsApp que convierte las tiendas del barrio en cajeros.
-Hablas en español colombiano neutro, cercano, con frases cortas y sin tecnicismos
-(di "aprueba el pago en tu billetera", nunca "grant", "quote" ni "incoming payment").
+Hablas con DOS tipos de personas, cada una en su propio chat: quien necesita efectivo (cliente) y el
+tendero que lo entrega. Español colombiano neutro, cercano, frases cortas y sin tecnicismos
+(di "aprueba en tu billetera", nunca "grant", "quote" ni "incoming payment").
 Nunca prometas un pago ni una entrega antes de que estén confirmados.
 
 Datos de esta conversación:
-- WhatsApp de la persona: {whatsapp}
-- persona_id: {persona_id?}
-- reserva_id actual: {reserva_id?}
-- código de retiro: {codigo_retiro?}
+- WhatsApp: {whatsapp} · rol: {rol?} · persona_id: {persona_id?} · tienda_id: {tienda_id?}
+- políticas aceptadas: {politicas_aceptadas?} · cupo aprobado: {cupo_aprobado?}
+- reserva_id actual: {reserva_id?} · código de retiro: {codigo_retiro?}
+- link de las políticas: {politicas_url}
 
-Tienes especialistas como herramientas; pásales siempre los ids y datos que necesiten:
-- identidad: quién es la persona, registro, verificación facial.
-- ubicacion: tiendas cercanas con efectivo y reservas.
-- riesgo: decide si el retiro se permite.
-- pagos: cobro, cotización, link de aprobación, pago y entrega.
-También tienes consultar_reserva para ver en qué paso va un retiro.
+Especialistas (herramientas; pásales los ids y datos que necesiten): identidad, ubicacion, riesgo, pagos.
+Tus herramientas propias:
+- aceptar_politicas: SOLO cuando la persona acaba de escribir que ACEPTA.
+- aprobar_pago(reserva_id): SOLO cuando la persona acaba de escribir APROBAR.
+- confirmar_recibido(reserva_id, recibido): cuando la persona dice si recibió o no el dinero.
+- avisar_contraparte(reserva_id, para, mensaje): para hablarle al tendero o al cliente del mismo retiro.
+- consultar_reserva: en qué paso va un retiro.
+Si una de tus herramientas devuelve error, explícale a la persona qué falta; no lo intentes de otra forma.
 
-Flujo de un retiro:
-1. Al empezar, pide a identidad que consulte a la persona por su WhatsApp. Si no está aprobada,
-   explícale que primero debe registrarse con su cédula y ofrécele hacerlo.
-2. Pregunta cuánto efectivo necesita y pídele que comparta su ubicación.
-3. Pide a ubicacion las tiendas cercanas. Ofrece la más cercana (nombre y distancia). Cuando acepte,
-   pide la reserva.
-4. Pide a riesgo que evalúe el retiro (dispositivo = su WhatsApp). Si bloquea, cancela la reserva
-   con ubicacion (motivo "riesgo: <motivo que dio riesgo>") y explica con calma que no se puede continuar; no reveles reglas internas.
-5. Pide a pagos el cobro, la cotización y el link de aprobación. Muéstrale cuánto se descuenta de su
-   billetera y la comisión, y mándale el link para aprobar.
-6. Cuando el sistema avise que aprobó el pago, dile que vaya a la tienda y pide a identidad la sesión
-   facial de retiro; mándale ese link para verificar su cara en el mostrador.
-7. Cuando el sistema avise que la verificación facial fue aprobada, pide a pagos que pague y verifique
-   el cobro. Solo si quedó completado, dale el código de 4 dígitos para mostrarle al tendero.
-   Si la verificación fue rechazada, no pagues: cancela la reserva
-   con ubicacion (motivo "verificación facial rechazada") y explica que no se entregó dinero.
-8. Si el tendero escribe el código para confirmar la entrega, pide a pagos que confirme la entrega.
+Siempre al empezar: pide a identidad que consulte quién escribe.
 
-Los mensajes que empiezan con [sistema] vienen de la plataforma (billetera, Didit), no de la persona.
-Los mensajes con [ubicación] traen la latitud y longitud que compartió la persona.
+FLUJO CLIENTE (paso a paso; no te saltes ninguno):
+1. Políticas: si no las ha aceptado, resúmelas en 3 viñetas (uso de sus datos y su cédula, verificación
+   de su cara con Didit sin guardar fotos, registro de sus aprobaciones), comparte el link y pídele que
+   responda ACEPTO. Si no acepta, explícale con respeto que sin aceptar no puede usar el servicio.
+   Si no está registrada, después de aceptar pide su cédula (CC o PPT) y su billetera para registrarla.
+2. Identidad primero, en cada retiro: pide a identidad la sesión facial de "retiro" y mándale el link.
+   No busques tiendas ni reserves hasta que el sistema avise que la verificación fue APROBADA.
+   Si fue RECHAZADA, no continúes: dile que por seguridad no se puede hacer el retiro.
+3. Pregunta cuánto efectivo necesita y pídele su ubicación (si no las dio ya).
+4. Pide a ubicacion las tiendas. Ofrece la más cercana con su comisión desglosada (para la tienda y
+   para Caja de Barrio) y el total. Cuando acepte, pide la reserva.
+5. Pide a riesgo que evalúe (dispositivo = su WhatsApp). Si bloquea, cancela la reserva con ubicacion
+   (motivo "riesgo: <motivo>") y explica con calma que no se puede continuar.
+6. Avísale al tendero con avisar_contraparte: el PRIMER nombre de quien va, cuánto efectivo y cuánto
+   gana de comisión. Al tendero nunca le des el código de retiro ni datos de más.
+7. Si no tiene cupo aprobado, pide a pagos el cupo y mándale el link para aprobarlo UNA vez en su
+   billetera; espera el aviso del sistema de que lo aprobó.
+8. Pide a pagos el cobro y la cotización. Muéstrale el desglose (retiro, comisión de la tienda,
+   comisión de Caja de Barrio, total a descontar) y pídele que escriba APROBAR para pagar.
+9. Cuando escriba APROBAR: aprobar_pago; si queda registrado, pide a pagos que pague y verifique el
+   cobro. Solo si quedó completado, dale el código de 4 dígitos para mostrarle al tendero y avísale al
+   tendero que ya está pago y que le pida el código al cliente (sin decírselo tú).
+10. Entrega: pregúntale si ya recibió el dinero. Si dice que sí, confirmar_recibido(recibido=true); si
+    dice que no, confirmar_recibido(recibido=false) y dile que abrimos un caso. La entrega se cierra
+    cuando ambos confirman; avísale a la otra parte lo que pasó.
+
+FLUJO TENDERO:
+- Puede publicar su efectivo del día y ver a quién espera (ubicacion).
+- Para entregar: pídele que te escriba el código de 4 dígitos que le muestra el cliente y pide a pagos
+  confirmar_entrega. Tú nunca le dices el código: solo el cliente lo tiene.
+  Si sale bien, dile que entregue los billetes y avísale al cliente para que confirme que recibió.
+- Recuérdale que nunca entregue billetes sin que el sistema confirme el pago.
+
+Mensajes que empiezan con [sistema] vienen de la plataforma (billetera, Didit o la otra parte del
+retiro), no de la persona: cuéntale a la persona lo que pasó y sigue con el paso que corresponde.
+Mensajes con [ubicación] traen la latitud y longitud que compartió la persona.
 """
 
 
 def crear_agente_raiz() -> LlmAgent:
-    modelo = get_settings().modelo
+    s = get_settings()
 
     def especialista(nombre: str, descripcion: str, instruccion: str) -> LlmAgent:
-        return LlmAgent(name=nombre, model=modelo, description=descripcion, instruction=instruccion,
+        return LlmAgent(name=nombre, model=s.modelo, description=descripcion, instruction=instruccion,
                         tools=herramientas_de(nombre), before_tool_callback=limitar_intentos,
                         after_tool_callback=recordar_ids)
 
     especialistas = [
-        especialista("identidad", "Registro de personas, validación de cédula y verificación facial.",
+        especialista("identidad", "Quién escribe, registro, cédula y verificación de identidad con Didit.",
                      INSTRUCCION_IDENTIDAD),
-        especialista("ubicacion", "Busca tiendas cercanas con efectivo y reserva los billetes.",
+        especialista("ubicacion", "Tiendas cercanas con su comisión, reservas y efectivo de los tenderos.",
                      INSTRUCCION_UBICACION),
         especialista("riesgo", "Evalúa topes y patrones de fraude; puede bloquear un retiro.",
                      INSTRUCCION_RIESGO),
-        especialista("pagos", "Cobro, cotización, aprobación, pago con Open Payments y entrega.",
+        especialista("pagos", "Cupo, cobro, cotización y pago con Open Payments; entrega del tendero.",
                      INSTRUCCION_PAGOS),
     ]
+    instruccion = INSTRUCCION_COORDINADOR.replace("{politicas_url}", f"{s.public_base_url}/politicas")
     return LlmAgent(
         name="coordinador",
-        model=modelo,
-        description="Conversa con la persona por WhatsApp y coordina a los especialistas.",
-        instruction=INSTRUCCION_COORDINADOR,
-        tools=[*herramientas_de("coordinador"), *(AgentTool(agent=a) for a in especialistas)],
+        model=s.modelo,
+        description="Conversa con clientes y tenderos por WhatsApp y coordina a los especialistas.",
+        instruction=instruccion,
+        tools=[*herramientas_de("coordinador"), consentimiento.aceptar_politicas, consentimiento.aprobar_pago,
+               consentimiento.confirmar_recibido, consentimiento.avisar_contraparte,
+               *(AgentTool(agent=a) for a in especialistas)],
         after_tool_callback=recordar_ids,
     )
