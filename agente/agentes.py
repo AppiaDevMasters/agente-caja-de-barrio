@@ -14,6 +14,7 @@ import logging
 from typing import Any, Optional
 
 from google.adk.agents import LlmAgent
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.tools import BaseTool, ToolContext
 from google.adk.tools.agent_tool import AgentTool
 
@@ -27,10 +28,16 @@ log = logging.getLogger("agente")
 # sesión, para que ni el coordinador ni los especialistas tengan que adivinar ids.
 _CLAVES_ESTADO = ("persona_id", "rol", "tienda_id", "politicas_version", "politicas_aceptadas",
                   "cupo_aprobado", "reserva_id", "incoming_payment_url", "quote_url", "session_id",
-                  "solicitud_id", "estado_solicitud")
+                  "solicitud_id", "estado_solicitud", "estado_tienda")
 
 # Tope de llamadas a herramientas por especialista en cada encargo: corta bucles de reintentos.
 MAX_LLAMADAS_ESPECIALISTA = 10
+
+
+def fijar_whatsapp(callback_context: CallbackContext) -> None:
+    """En la UI de ADK la sesión nace sin estado: el número es el userId de la URL (?userId=57...)."""
+    if not callback_context.state.get("whatsapp"):
+        callback_context.state["whatsapp"] = callback_context.session.user_id
 
 
 def limitar_intentos(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext) -> Optional[dict]:
@@ -101,8 +108,10 @@ Te encargas de identificar a quien escribe, registrar personas y verificar su id
 - consultar_persona con el WhatsApp dice si es "cliente", "tendero", "solicitante" (pidió registrar una
   tienda) o "no_registrada", si aceptó las políticas, si tiene la identidad verificada vigente y si ya
   aprobó su cupo en la billetera.
-- Registro: verificar_cedula y luego registrar_persona (con su billetera); después crear_sesion_facial
-  con motivo "alta".
+- Registro de una persona nueva: crear_sesion_facial con su whatsapp y motivo "alta" (sin persona_id).
+  NO pidas la cédula: Didit la lee del documento y el sistema la valida con Verifik.
+- Tendero que Caja de Barrio registró en el panel (estado_tienda "pendiente_verificacion"):
+  crear_sesion_facial con su tienda_id y motivo "alta_tendero".
 - Al empezar cada retiro: crear_sesion_facial con motivo "retiro". Reporta el url_verificacion.
 - estado_verificacion dice si una sesión ya terminó.
 - Solicitud de tendero: solicitar_ser_tendero con todos los datos que te pase el coordinador; luego
@@ -134,6 +143,7 @@ Manejas el pago con Open Payments.
 - Pagar (solo cuando el coordinador lo pida, después de que la persona escribió APROBAR): pagar y
   luego estado_cobro para confirmar que el cobro de la tienda quedó completado.
 - Entrega del lado del tendero: confirmar_entrega con la reserva y el código de 4 dígitos.
+- Billetera virtual: consultar_saldo con el WhatsApp de quien pregunta (persona o tendero).
 Nunca digas que un pago se hizo si pagar o estado_cobro no lo confirmaron.
 """
 
@@ -166,7 +176,11 @@ FLUJO CLIENTE (paso a paso; no te saltes ninguno):
 1. Políticas: si no las ha aceptado, resúmelas en 3 viñetas (uso de sus datos y su cédula, verificación
    de su cara con Didit sin guardar fotos, registro de sus aprobaciones), comparte el link y pídele que
    responda ACEPTO. Si no acepta, explícale con respeto que sin aceptar no puede usar el servicio.
-   Si no está registrada, después de aceptar pide su cédula (CC o PPT) y su billetera para registrarla.
+   Si no está registrada, después de aceptar NO le pidas la cédula: pide a identidad la sesión facial de
+   "alta" con su WhatsApp y mándale el link. Didit lee su documento y Caja de Barrio lo valida con Verifik.
+   Cuando el sistema avise que la verificación fue APROBADA (motivo alta), pide a identidad que consulte
+   de nuevo quién es y a pagos su saldo: cuéntale que ya está registrada, cuál es su billetera y cuánto
+   tiene. Si quedó en revisión manual, dile que el equipo la revisa y le avisa por aquí.
 2. Identidad primero, en cada retiro: pide a identidad la sesión facial de "retiro" y mándale el link.
    No busques tiendas ni reserves hasta que el sistema avise que la verificación fue APROBADA.
    Si fue RECHAZADA, no continúes: dile que por seguridad no se puede hacer el retiro.
@@ -189,11 +203,18 @@ FLUJO CLIENTE (paso a paso; no te saltes ninguno):
     cuando ambos confirman; avísale a la otra parte lo que pasó.
 
 FLUJO TENDERO:
+- Si su tienda está "pendiente_verificacion" (Caja de Barrio la registró en el panel): dale la bienvenida,
+  pide las políticas como al cliente y luego pide a identidad la sesión facial de "alta_tendero" con su
+  tienda_id; mándale el link. Hasta que el sistema avise que la verificación fue APROBADA no puede publicar
+  efectivo ni recibir retiros. Cuando la aprueben, dile que su tienda quedó activa y pídele el efectivo del día.
 - Puede publicar su efectivo del día y ver a quién espera (ubicacion).
 - Para entregar: pídele que te escriba el código de 4 dígitos que le muestra el cliente y pide a pagos
   confirmar_entrega. Tú nunca le dices el código: solo el cliente lo tiene.
   Si sale bien, dile que entregue los billetes y avísale al cliente para que confirme que recibió.
 - Recuérdale que nunca entregue billetes sin que el sistema confirme el pago.
+
+BILLETERA VIRTUAL (cliente y tendero): si alguien pregunta cuánto tiene, pide a pagos consultar_saldo con
+su WhatsApp y dile el saldo y los últimos movimientos en palabras sencillas.
 
 FLUJO SOLICITANTE (alguien quiere registrar su tienda como punto de retiro):
 1. Políticas: igual que con el cliente; sin aceptar no sigue.
@@ -245,5 +266,6 @@ def crear_agente_raiz() -> LlmAgent:
         tools=[*herramientas_de("coordinador"), consentimiento.aceptar_politicas, consentimiento.aprobar_pago,
                consentimiento.confirmar_recibido, consentimiento.avisar_contraparte,
                *(AgentTool(agent=a) for a in especialistas)],
+        before_agent_callback=fijar_whatsapp,
         after_tool_callback=recordar_ids,
     )
