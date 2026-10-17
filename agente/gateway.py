@@ -183,8 +183,8 @@ async def procesar_resultado_didit(cuerpo: str, firma: str) -> dict:
         log.warning("webhook Didit rechazado: %s", r["error"])
         return r
     if r.get("procesado"):
-        aviso = "La verificación de identidad fue APROBADA." if r["aprobado"] else             "La verificación de identidad fue RECHAZADA: la cara no coincide."
-        await avisar(r["whatsapp"], f"{aviso} (motivo: {r['motivo']})")
+        aviso = "La verificación de identidad fue APROBADA." if r.get("aprobada", r.get("aprobado")) else             "La verificación de identidad fue RECHAZADA: la cara no coincide."
+        await avisar(r["whatsapp"], f"{aviso} (motivo: {r.get('motivo', '')})")
     return r
 
 
