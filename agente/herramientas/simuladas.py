@@ -422,7 +422,10 @@ def crear_sesion_facial(persona_id: str = "", motivo: str = "retiro", solicitud_
 
 
 def estado_verificacion(session_id: str) -> dict:
-    """Consulta el resultado de una sesión de verificación facial.
+    """Consulta el resultado de una sesión de Didit. Úsala cuando la persona diga que ya terminó (LISTO).
+
+    Si Didit ya decidió y el resultado todavía no se había procesado (porque no llegó webhook), lo
+    procesa aquí igual que el webhook: Verifik, registro, billetera o tienda activa.
 
     Args:
         session_id: Id de la sesión devuelto por crear_sesion_facial.
@@ -430,7 +433,24 @@ def estado_verificacion(session_id: str) -> dict:
     s = ALMACEN.sesiones_faciales.get(session_id)
     if s is None:
         return {"error": f"No existe la sesión {session_id}."}
-    return {"aprobada": s["aprobada"], "score": s["score"], "pendiente": s["aprobada"] is None}
+    if s["aprobada"] is None and s.get("decision_didit") is not None:
+        # En el backend real: GET a la API de Didit con la decisión de la sesión.
+        marcar_face_match(session_id, s["decision_didit"])
+    quien = (ALMACEN.tiendas[s["tienda_id"]].whatsapp_tendero if s.get("tienda_id")
+             else ALMACEN.solicitudes_tendero[s["solicitud_id"]].whatsapp if s.get("solicitud_id")
+             else ALMACEN.personas[s["persona_id"]].whatsapp)
+    return {"aprobada": s["aprobada"], "score": s["score"], "pendiente": s["aprobada"] is None,
+            "motivo": s["motivo"], "whatsapp": quien, "persona_id": s.get("persona_id"),
+            "tienda_id": s.get("tienda_id")}
+
+
+def registrar_decision_didit(session_id: str, aprobado: bool) -> dict:
+    """SIMULADOR: Didit decidió, pero sin webhook. Queda pendiente hasta que alguien consulte el estado."""
+    s = ALMACEN.sesiones_faciales.get(session_id)
+    if s is None:
+        return {"error": f"No existe la sesión {session_id}."}
+    s["decision_didit"] = aprobado
+    return {"ok": True}
 
 
 def marcar_face_match(session_id: str, aprobado: bool) -> dict:

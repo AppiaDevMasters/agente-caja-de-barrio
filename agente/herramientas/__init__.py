@@ -41,7 +41,7 @@ INTERNAS = {
     "confirmar_recibido": "caja",
 }
 # Lecturas que el código también necesita (por ejemplo, para avisarle a la contraparte).
-LECTURAS_DESDE_CODIGO = {"consultar_reserva": "caja"}
+LECTURAS_DESDE_CODIGO = {"consultar_reserva": "caja", "estado_verificacion": "identidad"}
 _LLAMABLES_DESDE_CODIGO = {**INTERNAS, **LECTURAS_DESDE_CODIGO}
 
 
