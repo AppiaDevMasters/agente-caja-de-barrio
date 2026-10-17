@@ -5,7 +5,7 @@
 # Requisitos en el VPS, uno al lado del otro:
 #   backend-caja-de-barrio/   ya instalado con su deploy/instalar.sh (red, Caddy, dominio, token)
 #   agente-caja-de-barrio/    este repo, con su .env (GOOGLE_API_KEY y MODELO)
-#   mcp-{identidad,mapa,caja,pagos}-caja-de-barrio/
+#   mcp-identidad-caja-de-barrio/, mcp-mapa-caja-de-barrio/, mcp-caja-de-barrio/, mcp-pagos-caja-de-barrio/
 #
 # Uso, desde la raíz de este repo:
 #   sudo ./deploy/instalar.sh
@@ -22,8 +22,8 @@ paso "Requisitos"
 [ -f "$backend_env" ] || { echo "No encuentro $backend_env: instala primero el backend." >&2; exit 1; }
 [ -f .env ] || { echo "Falta .env (copia .env.example y pon GOOGLE_API_KEY y MODELO)." >&2; exit 1; }
 grep -q '^GOOGLE_API_KEY=.\+' .env || { echo "Falta GOOGLE_API_KEY en .env." >&2; exit 1; }
-for m in identidad mapa caja pagos; do
-  [ -d "../mcp-$m-caja-de-barrio" ] || { echo "Falta ../mcp-$m-caja-de-barrio." >&2; exit 1; }
+for repo in mcp-identidad-caja-de-barrio mcp-mapa-caja-de-barrio mcp-caja-de-barrio mcp-pagos-caja-de-barrio; do
+  [ -d "../$repo" ] || { echo "Falta ../$repo." >&2; exit 1; }
 done
 docker network inspect rafiki-caja-barrio_rafiki >/dev/null || {
   echo "No existe la red del backend: levanta primero su stack." >&2; exit 1; }
