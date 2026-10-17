@@ -174,6 +174,53 @@ async def decidir_solicitud(solicitud_id: str, accion: str, datos: dict, tareas:
     return r
 
 
+@app.post("/admin/tenderos", status_code=201)
+async def registrar_tendero(datos: dict, tareas: BackgroundTasks) -> dict:
+    r = _ok(s.registrar_tendero_panel, **datos)
+    tareas.add_task(avisar_al_agente, r["whatsapp"], r["aviso"])
+    return r
+
+
+@app.get("/admin/saldos")
+async def saldos() -> dict:
+    items = [{"wallet_address": w, "saldo": v, "moneda": s.WALLETS[w][0]} for w, v in s.ALMACEN.saldos.items()]
+    return {"items": items, "total": len(items)}
+
+
+@app.get("/dev/tenderos", response_class=HTMLResponse)
+async def pagina_tenderos() -> str:
+    """Formulario mínimo de "Registrar tendero" mientras el panel no está conectado."""
+    filas = "".join(
+        f"<tr><td>{t.id}</td><td>{t.nombre}</td><td>{t.whatsapp_tendero}</td><td>{t.estado}</td>"
+        f"<td>{s.ALMACEN.saldos.get(t.wallet_address, 0):,.0f}</td></tr>" for t in s.ALMACEN.tiendas.values())
+    formulario = (
+        "<form method=post action='/dev/tenderos'>"
+        "<p><input name=nombre_tienda placeholder='Nombre de la tienda' required></p>"
+        "<p><input name=direccion placeholder='Dirección' required></p>"
+        "<p><input name=lat value='6.2770' size=8> <input name=lon value='-75.5570' size=8></p>"
+        "<p><select name=nivel><option>basico</option><option selected>comercio</option></select></p>"
+        "<p><input name=whatsapp_tendero placeholder='WhatsApp (5730...)' required></p>"
+        "<p><input name=nombre_tendero placeholder='Nombre del tendero' required></p>"
+        "<p><button>Registrar tendero</button></p></form>")
+    return _pagina("Registrar tendero (dev)", formulario +
+                   "<table border=1 cellpadding=6 style='border-collapse:collapse;font-size:14px'>"
+                   "<tr><th>Id</th><th>Tienda</th><th>WhatsApp</th><th>Estado</th><th>Saldo</th></tr>"
+                   f"{filas}</table>")
+
+
+@app.post("/dev/tenderos", response_class=HTMLResponse)
+async def registrar_desde_pagina(request: Request, tareas: BackgroundTasks) -> str:
+    form = dict(await request.form())
+    datos = {**form, "lat": float(form["lat"]), "lon": float(form["lon"]),
+             "motivo": "Alta de tendero desde la página de desarrollo."}
+    try:
+        r = await registrar_tendero(datos, tareas)
+        cuerpo = f"<p>Tienda {r['tienda_id']} creada ({r['estado']}). El agente le avisa al tendero.</p>"
+    except ErrorContrato as e:
+        cuerpo = f"<p>{e.mensaje}</p>"
+    return _pagina("Tendero registrado", cuerpo + "<p><a href='/dev/tenderos'>Volver</a></p>")
+
+
 @app.get("/dev/solicitudes", response_class=HTMLResponse)
 async def pagina_solicitudes() -> str:
     """Página mínima para decidir solicitudes mientras el panel no está conectado."""
@@ -309,6 +356,11 @@ async def pagar(datos: dict, idempotency_key: str = Header("")) -> dict:
     r = _ok(s.pagar, reserva_id=datos["reserva_id"])
     _PAGOS_HECHOS[clave] = r
     return r
+
+
+@app.get("/internal/pagos/saldo")
+async def consultar_saldo(whatsapp: str) -> dict:
+    return _ok(s.consultar_saldo, whatsapp=whatsapp)
 
 
 @app.get("/internal/pagos/cobros/estado")
