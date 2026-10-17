@@ -1,0 +1,64 @@
+# Agente y MCP en el mismo VPS que el backend (backend-caja-de-barrio/deploy).
+#
+#   docker compose -f deploy/compose.vps.yml up -d --build
+#
+# Se conectan a la red del stack del backend: Caddy publica https://agente.<DOMINIO> hacia
+# agente:8080, y los MCP llaman al backend por la red interna (http://backend:8000/internal),
+# sin salir a internet. Los repos de los MCP van clonados junto a este.
+name: agente-caja-de-barrio
+
+x-mcp: &mcp
+  restart: unless-stopped
+  networks: [rafiki]
+
+x-mcp-env: &mcp-env
+  BACKEND_URL: http://backend:8000/internal
+  SERVICIO_TOKEN: ${SERVICIO_TOKEN:?falta SERVICIO_TOKEN, lo fija deploy/instalar.sh}
+
+services:
+  agente:
+    build: ..
+    container_name: agente
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      MODO_HERRAMIENTAS: mcp
+      SERVICIO_TOKEN: ${SERVICIO_TOKEN}
+      PUBLIC_BASE_URL: https://agente.${DOMINIO:?falta DOMINIO}
+      SESIONES_URL: sqlite+aiosqlite:////data/sesiones.db
+      MCP_IDENTIDAD_URL: http://mcp-identidad:8104/mcp
+      MCP_MAPA_URL: http://mcp-mapa:8102/mcp
+      MCP_CAJA_URL: http://mcp-caja:8103/mcp
+      MCP_PAGOS_URL: http://mcp-pagos:8101/mcp
+    volumes:
+      - sesiones:/data
+    depends_on: [mcp-identidad, mcp-mapa, mcp-caja, mcp-pagos]
+    networks: [rafiki]
+
+  mcp-identidad:
+    <<: *mcp
+    build: ../../mcp-identidad-caja-de-barrio
+    environment: {<<: *mcp-env, PUERTO: "8104"}
+
+  mcp-mapa:
+    <<: *mcp
+    build: ../../mcp-mapa-caja-de-barrio
+    environment: {<<: *mcp-env, PUERTO: "8102"}
+
+  mcp-caja:
+    <<: *mcp
+    build: ../../mcp-caja-de-barrio
+    environment: {<<: *mcp-env, PUERTO: "8103"}
+
+  mcp-pagos:
+    <<: *mcp
+    build: ../../mcp-pagos-caja-de-barrio
+    environment: {<<: *mcp-env, PUERTO: "8101"}
+
+networks:
+  rafiki:
+    name: rafiki-caja-barrio_rafiki
+    external: true
+
+volumes:
+  sesiones:
