@@ -5,7 +5,8 @@ description = "Agente conversacional de Caja de Barrio: gateway FastAPI y coordi
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.141.1",
-    "google-adk[mcp]==2.5.0",
+    "google-adk[db,mcp]==2.5.0",
+    "greenlet>=3.5.6",
     "httpx>=0.28.1",
     "pydantic-settings>=2.16.0",
     "uvicorn[standard]>=0.54.0",

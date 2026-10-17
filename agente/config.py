@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     mcp_identidad_url: str = "http://mcp-identidad:8104/mcp"
 
     public_base_url: str = "http://localhost:8080"
+    # Sesiones compartidas por la UI de ADK y el gateway. Vacío: en memoria (se pierden al reiniciar).
+    # Ejemplo: sqlite+aiosqlite:////data/sesiones.db
+    sesiones_url: str = ""
     # Token que el backend manda en X-Servicio-Token al llamar /internal/avisos. Vacío: se rechaza todo.
     servicio_token: str = ""
 
