@@ -188,6 +188,22 @@ async def procesar_resultado_didit(cuerpo: str, firma: str) -> dict:
     return r
 
 
+@app.get("/didit/retorno", response_class=HTMLResponse)
+async def didit_retorno(session_id: str, tareas: BackgroundTasks) -> str:
+    """A donde vuelve el navegador al terminar Didit. Sirve aunque no llegue el webhook: le pide
+    el resultado al backend (que se lo pregunta a Didit) y le avisa a la persona en su chat."""
+    r = await llamar_interna("estado_verificacion", session_id=session_id)
+    if "error" in r:
+        log.warning("session_id=%s retorno de Didit sin estado: %s", session_id, r["error"])
+        return _pagina("No pudimos confirmar", "<p>Vuelve al chat y escribe LISTO.</p>")
+    if r.get("pendiente"):
+        return _pagina("Estamos revisando", "<p>Didit todavía está procesando. Vuelve al chat y escribe LISTO "
+                       "en un momento.</p>")
+    aviso = "La verificación de identidad fue APROBADA." if r["aprobada"] else         "La verificación de identidad fue RECHAZADA: la cara no coincide."
+    tareas.add_task(avisar, r["whatsapp"], f"{aviso} (motivo: {r['motivo']})")
+    return _pagina("¡Gracias!", "<p>Ya tenemos el resultado. Vuelve al chat para seguir.</p>")
+
+
 @app.post("/webhook/didit")
 async def webhook_didit(request: Request, tareas: BackgroundTasks) -> dict:
     cuerpo = (await request.body()).decode("utf-8")
