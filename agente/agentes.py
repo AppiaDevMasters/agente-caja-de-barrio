@@ -40,7 +40,20 @@ def fijar_whatsapp(callback_context: CallbackContext) -> None:
         callback_context.state["whatsapp"] = callback_context.session.user_id
 
 
+def fijar_whatsapp_de_la_herramienta(args: dict[str, Any], tool_context: ToolContext) -> None:
+    """El número de quien escribe sale de la sesión, nunca del modelo.
+
+    Gemini "normaliza" números por su cuenta (le agregó el 57 a 3506477716): para el backend
+    es otra persona, sin registro ni políticas, y el retiro se queda en SIN_POLITICAS.
+    """
+    propio = tool_context.state.get("whatsapp")
+    if propio and "whatsapp" in args and args["whatsapp"] != propio:
+        log.info("herramienta con whatsapp %s corregido al de la sesión", args["whatsapp"][-4:])
+        args["whatsapp"] = propio
+
+
 def limitar_intentos(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext) -> Optional[dict]:
+    fijar_whatsapp_de_la_herramienta(args, tool_context)
     llamadas = tool_context.state.get("temp:llamadas", 0) + 1
     tool_context.state["temp:llamadas"] = llamadas
     if llamadas > MAX_LLAMADAS_ESPECIALISTA:
