@@ -25,7 +25,8 @@ PERMISOS: dict[str, dict[str, list[str]]] = {
     },
     "riesgo": {"caja": ["evaluar_riesgo"]},
     "pagos": {
-        "pagos": ["resolver_wallet", "pedir_cupo", "crear_cobro", "cotizar", "pagar", "estado_cobro"],
+        "pagos": ["resolver_wallet", "pedir_cupo", "crear_cobro", "cotizar", "pagar", "estado_cobro",
+                  "consultar_saldo"],
         "caja": ["consultar_reserva", "confirmar_entrega"],
     },
 }

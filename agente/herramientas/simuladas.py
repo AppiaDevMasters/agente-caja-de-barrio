@@ -49,15 +49,21 @@ COP_POR_USD = 4_000
 
 # Cupo que la persona aprueba una sola vez en su billetera (grant con tope e intervalo).
 CUPO_POR_MONEDA = {"COP": 1_000_000, "USD": 300}
+
+# Billetera virtual: el ASE lleva el saldo de cada wallet. Con esto nace una persona en la demo.
+SALDO_INICIAL_DEMO = {"COP": 1_000_000, "USD": 300}
+BASE_WALLETS = "$ilp.interledger-test.dev"
 INTERVALO_CUPO = "P7D"
 
 WALLET_TIENDA = "$ilp.interledger-test.dev/tienda-cajadebarrio"
 WALLET_APP = "$ilp.interledger-test.dev/app-cajadebarrio"
+WALLET_APP_COP = "$ilp.interledger-test.dev/app-cajadebarrio-cop"
 WALLETS = {
     "$ilp.interledger-test.dev/laura-cajadebarrio": ("COP", 2),
     "$ilp.interledger-test.dev/andres-cajadebarrio": ("USD", 2),
     WALLET_TIENDA: ("COP", 2),
     WALLET_APP: ("EUR", 2),
+    WALLET_APP_COP: ("COP", 2),
 }
 
 
@@ -162,6 +168,9 @@ class Almacen:
     grants: dict[str, dict] = field(default_factory=dict)
     sesiones_faciales: dict[str, dict] = field(default_factory=dict)
     alertas: list[dict] = field(default_factory=list)
+    # Billetera virtual: saldo por wallet (en su moneda) y movimientos (solo inserción).
+    saldos: dict[str, float] = field(default_factory=dict)
+    movimientos: list[dict] = field(default_factory=list)
     # Registros de auditoría que en la base real son tablas propias.
     solicitudes_tendero: dict[str, SolicitudTendero] = field(default_factory=dict)
     aceptaciones_politicas: list[dict] = field(default_factory=list)
@@ -201,6 +210,30 @@ def reiniciar() -> None:
                "573000000014", "Don Luis", publicado_cop=150_000),
     ]:
         ALMACEN.tiendas[t.id] = t
+    for wallet, (moneda, _) in WALLETS.items():
+        if wallet not in ALMACEN.saldos:
+            _mover(wallet, SALDO_INICIAL_DEMO[moneda] if wallet in _WALLETS_CLIENTES else 0, "carga_inicial")
+
+
+_WALLETS_CLIENTES = {"$ilp.interledger-test.dev/laura-cajadebarrio", "$ilp.interledger-test.dev/andres-cajadebarrio"}
+
+
+def _mover(wallet: str, monto: float, tipo: str, reserva_id: Optional[str] = None) -> None:
+    ALMACEN.saldos[wallet] = round(ALMACEN.saldos.get(wallet, 0) + monto, 2)
+    ALMACEN.movimientos.append({"wallet_address": wallet, "tipo": tipo, "monto": monto, "reserva_id": reserva_id,
+                                "saldo": ALMACEN.saldos[wallet], "en": ahora().isoformat()})
+
+
+def _crear_wallet(nombre: str, moneda: str = "COP", saldo_inicial: float = 0) -> str:
+    """Crea la wallet en nuestro ASE (en el backend real, con la Admin API de Rafiki)."""
+    base = "".join(c if c.isalnum() else "-" for c in nombre.lower()).strip("-") or "persona"
+    wallet = f"{BASE_WALLETS}/{base}"
+    n = 2
+    while wallet in WALLETS:
+        wallet, n = f"{BASE_WALLETS}/{base}-{n}", n + 1
+    WALLETS[wallet] = (moneda, 2)
+    _mover(wallet, saldo_inicial, "carga_inicial")
+    return wallet
 
 
 reiniciar()
@@ -258,7 +291,9 @@ def consultar_persona(whatsapp: str) -> dict:
     tienda = _tienda_de_tendero(whatsapp)
     if tienda:
         return {"rol": "tendero", "tienda_id": tienda.id, "nombre_tienda": tienda.nombre,
-                "nombre": tienda.nombre_tendero, "efectivo_libre_cop": tienda.libre_cop}
+                "nombre": tienda.nombre_tendero, "estado_tienda": tienda.estado,
+                "efectivo_libre_cop": tienda.libre_cop, "wallet_address": tienda.wallet_address,
+                "politicas_aceptadas": _acepto_politicas(whatsapp), "politicas_version": POLITICAS_VERSION}
     base = {"politicas_aceptadas": _acepto_politicas(whatsapp), "politicas_version": POLITICAS_VERSION}
     solicitud = _solicitud_abierta(whatsapp)
     if solicitud:
@@ -323,15 +358,44 @@ def registrar_persona(whatsapp: str, tipo: str, numero: str, wallet_address: str
     return {"persona_id": p.id, "estado_registro": p.estado_registro}
 
 
-def crear_sesion_facial(persona_id: str = "", motivo: str = "retiro", solicitud_id: str = "") -> dict:
-    """Crea la sesión de prueba de vida y face match en Didit. Es el primer paso de toda operación.
+def crear_sesion_facial(persona_id: str = "", motivo: str = "retiro", solicitud_id: str = "",
+                        whatsapp: str = "", tienda_id: str = "") -> dict:
+    """Crea la sesión de Didit (documento + prueba de vida). Es el primer paso de toda operación.
+
+    Formas:
+    - Persona nueva (registro): whatsapp y motivo "alta". No se pide la cédula: Didit la lee del documento
+      y el backend la valida con Verifik.
+    - Tendero registrado en el panel: tienda_id y motivo "alta_tendero".
+    - Cliente que va a retirar: persona_id y motivo "retiro".
 
     Args:
-        persona_id: Id de la persona a verificar (clientes).
-        motivo: "alta" (registro), "retiro" (inicio de un retiro) o "alta_tendero" (solicitud de tienda).
-        solicitud_id: Id de la solicitud de tendero, en lugar de persona_id, cuando el motivo es "alta_tendero".
+        persona_id: Id de la persona (clientes ya registrados).
+        motivo: "alta", "retiro" o "alta_tendero".
+        solicitud_id: Id de una solicitud de tendero hecha por WhatsApp (motivo "alta_tendero").
+        whatsapp: WhatsApp de una persona nueva (motivo "alta").
+        tienda_id: Id de la tienda registrada en el panel (motivo "alta_tendero").
     """
     base = get_settings().public_base_url
+    if tienda_id:
+        t = ALMACEN.tiendas.get(tienda_id)
+        if t is None:
+            return {"error": f"No existe la tienda {tienda_id}."}
+        if not _acepto_politicas(t.whatsapp_tendero):
+            return {"error": "Sin aceptar las políticas no se puede verificar la identidad."}
+        if t.estado != "pendiente_verificacion":
+            return {"error": f"La tienda está {t.estado}; no necesita verificación."}
+        session_id = _nuevo_id("did")
+        ALMACEN.sesiones_faciales[session_id] = {"persona_id": None, "tienda_id": tienda_id,
+                                                 "motivo": "alta_tendero", "aprobada": None, "score": None}
+        return {"session_id": session_id, "url_verificacion": f"{base}/simulador/didit?session_id={session_id}"}
+    if whatsapp and not persona_id:
+        if not _acepto_politicas(whatsapp):
+            return {"error": "Sin aceptar las políticas no se puede verificar la identidad."}
+        existente = next((x for x in ALMACEN.personas.values() if x.whatsapp == whatsapp), None)
+        if existente is None:
+            existente = Persona(_nuevo_id("per"), whatsapp, "", "", "", estado_registro="verificando")
+            ALMACEN.personas[existente.id] = existente
+        persona_id, motivo = existente.id, ("alta" if existente.estado_registro != "aprobada" else motivo)
     if solicitud_id:
         sol = ALMACEN.solicitudes_tendero.get(solicitud_id)
         if sol is None:
@@ -384,17 +448,45 @@ def marcar_face_match(session_id: str, aprobado: bool) -> dict:
         _historial(sol, "didit", "verificacion_identidad", "aprobada" if aprobado else "rechazada")
         return {"ok": True, "whatsapp": sol.whatsapp, "persona_id": None, "solicitud_id": sol.id,
                 "motivo": "alta_tendero", "estado_solicitud": sol.estado}
+    if s.get("tienda_id"):
+        t = ALMACEN.tiendas[s["tienda_id"]]
+        if aprobado:
+            documento = _documento_leido_por_didit(session_id)
+            valida = verificar_cedula("CC", documento["numero"]).get("valida")
+            t.estado = "activa" if valida else "revision_manual"
+        else:
+            ALMACEN.alertas.append({"id": _nuevo_id("ale"), "persona_id": None, "tienda_id": t.id,
+                                    "regla": "verificacion_facial_fallida", "detalle": f"sesión {session_id}",
+                                    "creada_en": ahora().isoformat(), "estado": "abierta"})
+        return {"ok": True, "whatsapp": t.whatsapp_tendero, "persona_id": None, "tienda_id": t.id,
+                "motivo": "alta_tendero", "estado_tienda": t.estado}
     p = ALMACEN.personas[s["persona_id"]]
     if aprobado:
         p.verificacion_session, p.verificado_hasta = session_id, ahora() + VIGENCIA_VERIFICACION
         if s["motivo"] == "alta":
-            p.estado_registro = "aprobada"
+            # Didit leyó el documento; Verifik confirma la cédula. Si no coincide, revisión manual.
+            documento = _documento_leido_por_didit(session_id)
+            if verificar_cedula("CC", documento["numero"]).get("valida"):
+                p.cedula, p.nombre = documento["numero"], p.nombre or documento["nombre"]
+                p.estado_registro = "aprobada"
+                if not p.wallet_address:
+                    p.wallet_address = _crear_wallet(p.nombre, "COP", SALDO_INICIAL_DEMO["COP"])
+            else:
+                p.estado_registro = "revision_manual"
     else:
         p.verificacion_session, p.verificado_hasta = None, None
         ALMACEN.alertas.append({"id": _nuevo_id("ale"), "persona_id": p.id, "tienda_id": None,
                                 "regla": "verificacion_facial_fallida", "detalle": f"sesión {session_id}",
                                 "creada_en": ahora().isoformat(), "estado": "abierta"})
     return {"ok": True, "whatsapp": p.whatsapp, "persona_id": p.id, "motivo": s["motivo"]}
+
+
+def _documento_leido_por_didit(session_id: str) -> dict:
+    """En el real, el backend lo toma de la decisión de Didit; aquí, uno fijo por sesión."""
+    s = ALMACEN.sesiones_faciales[session_id]
+    if "documento" not in s:
+        s["documento"] = {"numero": str(1_000_000_000 + secrets.randbelow(99_999_999)), "nombre": "Persona Verificada"}
+    return s["documento"]
 
 
 def procesar_webhook_didit(cuerpo: str, firma: str) -> dict:
@@ -654,6 +746,8 @@ def publicar_efectivo(tienda_id: str, monto_cop: int) -> dict:
     t = ALMACEN.tiendas.get(tienda_id)
     if t is None:
         return {"error": f"No existe la tienda {tienda_id}."}
+    if t.estado != "activa":
+        return {"error": "La tienda todavía no está activa: el tendero debe verificar su identidad primero."}
     if monto_cop < t.reservado_cop:
         return {"error": "No puede publicar menos de lo que ya está reservado."}
     t.publicado_cop = monto_cop
@@ -1003,6 +1097,12 @@ def pagar(reserva_id: str) -> dict:
         return {"error": "La persona no ha aprobado su cupo en la billetera."}
     if p.cupo["usado"] + q["debito"] > p.cupo["limite"]:
         return {"error": "El pago supera el cupo disponible aprobado en la billetera."}
+    if ALMACEN.saldos.get(p.wallet_address, 0) < q["debito"]:
+        return {"error": "Saldo insuficiente en la billetera."}
+    t = ALMACEN.tiendas[r.tienda_id]
+    _mover(p.wallet_address, -q["debito"], "pago_retiro", r.id)
+    _mover(t.wallet_address, r.monto_cop + r.comision_tendero_cop, "cobro_retiro", r.id)
+    _mover(WALLET_APP_COP, r.comision_plataforma_cop, "comision_plataforma", r.id)
     for url in (r.incoming_payment_url, r.cobro_plataforma_url):
         cobro = ALMACEN.cobros[url]
         cobro["recibido_cop"], cobro["completado"] = cobro["monto_cop"], True
@@ -1011,6 +1111,41 @@ def pagar(reserva_id: str) -> dict:
     r.estado, r.pagada_en = "pagada", ahora()
     return {"outgoing_payment_id": r.outgoing_payment_id, "estado": "completado",
             "cupo_disponible": p.cupo["limite"] - p.cupo["usado"]}
+
+
+def consultar_saldo(whatsapp: str) -> dict:
+    """Billetera virtual: cuánto tiene la persona (o la tienda, si quien pregunta es tendero).
+
+    Args:
+        whatsapp: Número de WhatsApp de quien pregunta.
+    """
+    tienda = _tienda_de_tendero(whatsapp)
+    persona = next((x for x in ALMACEN.personas.values() if x.whatsapp == whatsapp), None)
+    wallet = tienda.wallet_address if tienda else (persona.wallet_address if persona else "")
+    if not wallet:
+        return {"error": "Esa persona todavía no tiene billetera: primero debe registrarse."}
+    movimientos = [m for m in ALMACEN.movimientos if m["wallet_address"] == wallet][-5:]
+    return {"wallet_address": wallet, "saldo": ALMACEN.saldos.get(wallet, 0), "moneda": WALLETS[wallet][0],
+            "movimientos": movimientos}
+
+
+def registrar_tendero_panel(nombre_tienda: str, direccion: str, lat: float, lon: float, nivel: str,
+                            whatsapp_tendero: str, nombre_tendero: str, motivo: str) -> dict:
+    """PANEL (POST /admin/tenderos): crea la tienda pendiente de verificación, con wallet y saldo en 0."""
+    if len(motivo.strip()) < 10:
+        return {"error": "El motivo debe tener al menos 10 caracteres."}
+    if nivel not in TOPE_TIENDA_COP:
+        return {"error": "El nivel debe ser basico, comercio o aliado."}
+    if _tienda_de_tendero(whatsapp_tendero):
+        return {"error": "Ese WhatsApp ya es tendero de otra tienda."}
+    wallet = _crear_wallet(nombre_tienda, "COP", 0)
+    t = Tienda(_nuevo_id("tie"), nombre_tienda, direccion, lat, lon, nivel, whatsapp_tendero, nombre_tendero,
+               wallet, estado="pendiente_verificacion")
+    ALMACEN.tiendas[t.id] = t
+    aviso = (f"Caja de Barrio registró tu tienda {nombre_tienda}. Para activarla, escríbenos y verifica tu "
+             f"identidad con Didit.")
+    return {"tienda_id": t.id, "estado": t.estado, "wallet_address": wallet, "whatsapp": whatsapp_tendero,
+            "aviso": aviso}
 
 
 def estado_cobro(incoming_payment_url: str) -> dict:
