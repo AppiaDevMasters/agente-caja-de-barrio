@@ -30,6 +30,10 @@ SERVICIO_TOKEN = os.getenv("SERVICIO_TOKEN", "")
 OP_FINISH_URL = os.getenv("OP_FINISH_URL", "http://localhost:8088/op/finish")
 DIDIT_CALLBACK_URL = os.getenv("DIDIT_CALLBACK_URL", "http://agente:8080/webhook/didit")
 AGENTE_URL = os.getenv("AGENTE_URL", "http://agente:8080")
+# "webhook": el Didit simulado avisa por webhook. "consulta": no hay webhook; la decisión queda en
+# Didit hasta que alguien la consulta (página de retorno o LISTO en el chat).
+DIDIT_MODO = os.getenv("DIDIT_MODO", "webhook")
+AGENTE_PUBLICO = os.getenv("AGENTE_PUBLICO", "http://localhost:8088")
 
 app = FastAPI(title="Backend simulado de Caja de Barrio")
 
@@ -408,5 +412,9 @@ async def didit(session_id: str) -> str:
 
 @app.get("/simulador/didit/resultado", response_class=HTMLResponse)
 async def didit_resultado(session_id: str, aprobado: bool, tareas: BackgroundTasks) -> str:
+    if DIDIT_MODO == "consulta":
+        _ok(s.registrar_decision_didit, session_id=session_id, aprobado=aprobado)
+        retorno = f"{AGENTE_PUBLICO}/didit/retorno?session_id={session_id}"
+        return _pagina("Verificación terminada", f"<p><a href='{retorno}'>Volver a Caja de Barrio</a></p>")
     tareas.add_task(_enviar_webhook_didit, session_id, aprobado)
     return _pagina("Verificación enviada", "<p>Vuelve a WhatsApp.</p>")
