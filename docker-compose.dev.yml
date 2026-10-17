@@ -1,12 +1,14 @@
 # Cadena completa para probar sin el backend de Go:
 #   agente (modo mcp) → mcp-identidad / mcp-mapa / mcp-caja / mcp-pagos → backend simulado
 # Los repos de los MCP deben estar clonados junto a este (../mcp-*-caja-de-barrio).
-# Cuando el backend de Go esté listo, basta con apuntar BACKEND_URL de los MCP a él.
+# Contra el backend de Go: BACKEND_URL y SERVICIO_TOKEN en .env (ver arriba en x-mcp).
 #
 #   docker compose -f docker-compose.dev.yml up -d --build
 x-mcp: &mcp
   environment: &mcp-env
-    BACKEND_URL: http://backend-simulado:8190/internal
+    # Por defecto, el backend simulado. Para el real: BACKEND_URL=https://backend.cajadebarrio.lat/internal
+    # y su SERVICIO_TOKEN en el .env de este repo.
+    BACKEND_URL: ${BACKEND_URL:-http://backend-simulado:8190/internal}
     SERVICIO_TOKEN: ${SERVICIO_TOKEN:-dev-token}
   depends_on: [backend-simulado]
   restart: unless-stopped
